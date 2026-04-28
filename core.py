@@ -171,6 +171,24 @@ def _load_tpex_bulk():
         except Exception:
             continue
 
+def _yf_history_with_retry(ticker, period: str, max_retries: int = 3) -> pd.DataFrame:
+    """Call ticker.history() with exponential backoff on rate limit."""
+    for attempt in range(max_retries):
+        try:
+            df = ticker.history(period=period, auto_adjust=True)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            err = str(e).lower()
+            if "rate" in err or "429" in err or "too many" in err:
+                wait = 5 * (2 ** attempt)
+                time.sleep(wait)
+                continue
+            raise
+    # Last attempt without catching
+    return ticker.history(period=period, auto_adjust=True)
+
+
 def resolve_and_fetch(symbol: str, lookback_years: int = 3) -> Tuple[str, str, pd.DataFrame]:
     """Fetch history + resolve name. Returns (resolved_sym, name, df)."""
     if not YF_OK:
@@ -192,7 +210,7 @@ def resolve_and_fetch(symbol: str, lookback_years: int = 3) -> Tuple[str, str, p
     for sym in candidates:
         try:
             ticker = yf.Ticker(sym)
-            df = ticker.history(period=period, auto_adjust=True)
+            df = _yf_history_with_retry(ticker, period)
             if df is None or df.empty: last_err = f"{sym}: 無資料"; continue
             df.index = pd.to_datetime(df.index).tz_localize(None)
             df = df[["Open","High","Low","Close","Volume"]].astype(float)
@@ -616,10 +634,11 @@ def run_analysis(symbol: str, lookback_years: int = 3,
     mkt_ctx = {"taiex_ret_1":0.0,"taiex_ret_5":0.0,"taiex_vol":0.01,
                "vix":20.0,"usd_twd":31.5,"_train_ratio":train_ratio}
     inst = {}
-    if REQUESTS_OK:
+    if REQUESTS_OK and YF_OK:
         try:
-            vix_df = yf.Ticker("^VIX").history(period="3d",auto_adjust=True)
-            if not vix_df.empty: mkt_ctx["vix"] = float(vix_df["Close"].iloc[-1])
+            vix_df = _yf_history_with_retry(yf.Ticker("^VIX"), "5d")
+            if vix_df is not None and not vix_df.empty:
+                mkt_ctx["vix"] = float(vix_df["Close"].iloc[-1])
         except Exception: pass
 
     # 4. ML

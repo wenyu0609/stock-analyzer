@@ -166,19 +166,19 @@ def build_chart(result: dict, style: str = "K棒",
     if show_bb:
         fig.add_trace(go.Scatter(
             x=df.index, y=ind["bb_up"],
-            line=dict(color="#6c8ef560", width=1), name="BB上軌"),
+            line=dict(color="rgba(108,142,245,0.38)", width=1), name="BB上軌"),
             row=1, col=1)
         fig.add_trace(go.Scatter(
             x=df.index, y=ind["bb_dn"],
-            line=dict(color="#6c8ef560", width=1), fill="tonexty",
-            fillcolor="#6c8ef510", name="BB下軌"),
+            line=dict(color="rgba(108,142,245,0.38)", width=1), fill="tonexty",
+            fillcolor="rgba(108,142,245,0.06)", name="BB下軌"),
             row=1, col=1)
 
     # Support / Resistance
     if show_sr:
         for lvl, color, lbl in [
-            (sr["resistance_hi"], "#f8717150", "壓力"),
-            (sr["support_lo"],    "#34d39950", "支撐"),
+            (sr["resistance_hi"], "rgba(248,113,113,0.31)", "壓力"),
+            (sr["support_lo"],    "rgba(52,211,153,0.31)", "支撐"),
         ]:
             fig.add_hline(y=lvl, line_dash="dot",
                           line_color=color, row=1, col=1,
@@ -189,12 +189,12 @@ def build_chart(result: dict, style: str = "K棒",
     if show_band:
         fig.add_trace(go.Scatter(
             x=future_dates, y=fc["upper"],
-            line=dict(color="#a78bfa40", width=0), name="上限"),
+            line=dict(color="rgba(167,139,250,0.25)", width=0), name="上限"),
             row=1, col=1)
         fig.add_trace(go.Scatter(
             x=future_dates, y=fc["lower"],
-            line=dict(color="#a78bfa40", width=0), fill="tonexty",
-            fillcolor="#a78bfa15", name="預測帶"),
+            line=dict(color="rgba(167,139,250,0.25)", width=0), fill="tonexty",
+            fillcolor="rgba(167,139,250,0.08)", name="預測帶"),
             row=1, col=1)
 
     # Forecast median
@@ -226,8 +226,8 @@ def build_chart(result: dict, style: str = "K棒",
         x=df.index, y=ind["rsi14"],
         line=dict(color="#34d399", width=1.5), name="RSI"),
         row=3, col=1)
-    fig.add_hline(y=70, line_dash="dot", line_color="#f8717160", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dot", line_color="#34d39960", row=3, col=1)
+    fig.add_hline(y=70, line_dash="dot", line_color="rgba(248,113,113,0.38)", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color="rgba(52,211,153,0.38)", row=3, col=1)
 
     # ── Layout ────────────────────────────────────────────────────
     fig.update_layout(
