@@ -226,6 +226,15 @@ hr { border-top:1px solid """+BD+""" !important; }
 .ni a { color:"""+DM+"""; text-decoration:none; }
 .ni:hover { border-color:"""+AC+"""; }
 
+
+/* ── Sidebar full override ── */
+[data-testid="stSidebar"] input, [data-testid="stSidebar"] .stTextInput input { background:"""+CD+""" !important; color:"""+TX+""" !important; }
+[data-testid="stSidebar"] [data-baseweb="select"] > div,[data-testid="stSidebar"] [data-baseweb="select"] span,[data-testid="stSidebar"] [data-baseweb="select"] div{ background:"""+CD+""" !important; color:"""+TX+""" !important; }
+[data-testid="stSidebar"] [role="option"]{ background:"""+CD+""" !important; color:"""+TX+""" !important; }
+[data-testid="stSidebar"] [role="option"]:hover { background:"""+BD+""" !important; }
+[data-baseweb="popover"],[data-baseweb="menu"]{ background:"""+CD+""" !important; }
+[data-baseweb="menu"] li { color:"""+TX+""" !important; background:"""+CD+""" !important; }
+[data-baseweb="menu"] li:hover { background:"""+BD+""" !important; }
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {
     h1 { font-size:1.2rem !important; }
@@ -247,27 +256,7 @@ hr { border-top:1px solid """+BD+""" !important; }
 
 # ── Mobile chart scroll fix (JavaScript) ─────────────────────────────────
 # Inject JS to prevent chart from hijacking mobile scroll
-st.markdown("""
-<script>
-// Prevent chart from blocking mobile scroll
-document.addEventListener('DOMContentLoaded', function() {
-    function fixChartScroll() {
-        var charts = document.querySelectorAll('.js-plotly-plot');
-        charts.forEach(function(chart) {
-            chart.addEventListener('touchstart', function(e) {
-                if (e.touches.length === 1) {
-                    // Single finger = page scroll, not chart zoom
-                    this._singleTouch = true;
-                }
-            }, {passive: true});
-        });
-    }
-    setTimeout(fixChartScroll, 2000);
-    var observer = new MutationObserver(fixChartScroll);
-    observer.observe(document.body, {childList: true, subtree: true});
-});
-</script>
-""", unsafe_allow_html=True)
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def badge(cls, t): return f"<span class='{cls}'>{t}</span>"
@@ -571,8 +560,8 @@ def sidebar():
 # ── Run analysis ───────────────────────────────────────────────────────────
 def analyze(sym):
     if not sym: return
-    p=st.progress(0,text="準備…")
-    def cb(s,t,m): p.progress(s/t,text=f"[{s}/{t}] {m}")
+    p=st.progress(0, text="分析中…")
+    def cb(s,t,m): p.progress(s/t, text=f"[{s}/{t}] {m}")
     try:
         r=run_analysis(sym.strip().upper(),
             lookback_years=st.session_state.lookback_years,
@@ -586,89 +575,299 @@ def analyze(sym):
         p.empty(); st.error(f"❌ {type(e).__name__}: {e}")
 
 # ── PDF ────────────────────────────────────────────────────────────────────
-def to_pdf(r,fig):
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import cm
-        from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle,Image as RI
-        from reportlab.lib.styles import ParagraphStyle
-        from reportlab.lib import colors
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import os
-        fn="Helvetica"
-        for fp in ["C:/Windows/Fonts/msjh.ttc","/System/Library/Fonts/PingFang.ttc",
-                   "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"]:
-            if os.path.exists(fp):
-                try: pdfmetrics.registerFont(TTFont("CJK",fp,subfontIndex=0)); fn="CJK"; break
-                except: pass
-    except ImportError: return b""
-    buf=io.BytesIO()
-    doc=SimpleDocTemplate(buf,pagesize=A4,leftMargin=2*cm,rightMargin=2*cm,
-        topMargin=2*cm,bottomMargin=2*cm)
-    H1=ParagraphStyle("H1",fontSize=16,fontName=fn,
-        textColor=colors.HexColor("#3b5bdb"),spaceAfter=8)
-    H2=ParagraphStyle("H2",fontSize=12,fontName=fn,
-        textColor=colors.HexColor("#111827"),spaceBefore=12,spaceAfter=6)
-    NM=ParagraphStyle("NM",fontSize=9,fontName=fn,
-        textColor=colors.HexColor("#374151"),leading=14)
-    elems=[]
-    name=r["name"]; sym=r["symbol"]; df=r["df"]; fc=r["forecast"]
-    ml_p=r.get("ml_predict",{}); bt=r.get("backtest",{})
-    ind=r["indicators"]
-    last=float(df["Close"].iloc[-1]); med=float(fc["median"][-1])
-    chg=(med-last)/last*100
-    elems.append(Paragraph(f"股票分析報告：{name} ({sym.split('.')[0]})",H1))
-    elems.append(Paragraph(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}",NM))
-    elems.append(Spacer(1,.3*cm))
-    try:
-        png=fig.to_image(format="png",width=1400,height=700,scale=1.5)
-        elems.append(RI(io.BytesIO(png),width=16*cm,height=8*cm))
-    except: pass
-    elems.append(Spacer(1,.3*cm))
-    elems.append(Paragraph("分析摘要",H2))
-    s=calc_score(r)
-    if s>=1.5: act="偏多·可試單"
-    elif s>=.5: act="偏多觀察"
-    elif s<=-1.5: act="偏空·減碼"
-    elif s<=-.5: act="偏空觀察"
-    else: act="中性觀望"
-    atr=float(ind["atr14"].iloc[-1]) if not pd.isna(ind["atr14"].iloc[-1]) else last*.02
-    td=[["項目","數值","項目","數值"],
-        ["現價",f"{last:,.2f}","建議",act],
-        [f"{r['forecast_days']}日預測",f"{med:,.2f}({chg:+.1f}%)",
-         "ML機率",f"{ml_p.get('prob_up',.5)*100:.1f}%"],
-        ["RSI",f"{float(ind['rsi14'].iloc[-1]):.1f}",
-         "命中率",bt.get("hit_rate_text","N/A")],
-        ["停損",f"{last-atr*1.5:,.2f}","停利",f"{last+atr*2.5:,.2f}"]]
-    t=Table(td,colWidths=[3.5*cm,4*cm,3.5*cm,4*cm])
+
+def build_reason_text(analysis: dict) -> str:
+    """
+    Generate concise, informative local interpretation.
+    Based on academic best practices for Taiwan stock prediction
+    (RSI divergence, MACD cross, BB squeeze, MA alignment, volume anomaly).
+    """
+    df   = analysis["df"]
+    ind  = analysis["indicators"]
+    sr   = analysis["sr"]
+    fc   = analysis["forecast"]
+    ml_p = analysis.get("ml_predict", {})
+    nn_p = analysis.get("nn_predict", {})
+    bt   = analysis.get("backtest", {})
+    ns   = analysis.get("news_sentiment", {})
+
+    close = df["Close"]
+    last  = float(close.iloc[-1])
+    med_future = float(fc["median"][-1])
+    chg_pct    = (med_future - last) / last * 100
+
+    rsi   = float(ind["rsi14"].iloc[-1])
+    macd_h= float(ind["macd_hist"].iloc[-1])
+    macd_l= float(ind["macd_line"].iloc[-1])
+    macd_s= float(ind["macd_signal"].iloc[-1])
+    ma5   = float(ind["ma5"].iloc[-1])
+    ma20  = float(ind["ma20"].iloc[-1])
+    ma60  = float(ind["ma60"].iloc[-1])
+    bb_up = float(ind["bb_up"].iloc[-1])
+    bb_dn = float(ind["bb_dn"].iloc[-1])
+    bb_w  = float(ind["bb_width"].iloc[-1]) if not pd.isna(ind["bb_width"].iloc[-1]) else 5.0
+    atr   = float(ind["atr14"].iloc[-1]) if not pd.isna(ind["atr14"].iloc[-1]) else last * 0.02
+    vol   = float(df["Volume"].iloc[-1])
+    vol_ma= float(ind["vol_ma20"].iloc[-1]) if not pd.isna(ind["vol_ma20"].iloc[-1]) else vol
+
+    bb_pos = (last - bb_dn) / max(bb_up - bb_dn, 1e-9)
+    bb_prev_w = float(ind["bb_width"].iloc[-2]) if len(ind["bb_width"]) > 1 and not pd.isna(ind["bb_width"].iloc[-2]) else bb_w
+    vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
+
+    # Detect key patterns
+    macd_cross_bull = (float(ind["macd_hist"].iloc[-2]) < 0 <= macd_h) if len(ind["macd_hist"]) > 1 else False
+    macd_cross_bear = (float(ind["macd_hist"].iloc[-2]) > 0 >= macd_h) if len(ind["macd_hist"]) > 1 else False
+    bb_squeeze      = bb_w < bb_prev_w * 0.85   # band narrowing = volatility contraction
+    bb_expand       = bb_w > bb_prev_w * 1.15
+
+    # RSI divergence (price new high but RSI lower, or vice versa)
+    if len(close) >= 10:
+        p_hi5  = float(close.iloc[-6:-1].max())
+        r_hi5  = float(ind["rsi14"].iloc[-6:-1].max()) if not pd.isna(ind["rsi14"].iloc[-6:-1].max()) else rsi
+        bear_div = (last > p_hi5 * 1.005) and (rsi < r_hi5 * 0.97)
+        bull_div = (last < p_hi5 * 0.995) and (rsi > r_hi5 * 1.03)
+    else:
+        bear_div = bull_div = False
+
+    lines = []
+
+    # ── RSI ──────────────────────────────────────────────────
+    if rsi >= 75:
+        lines.append(f"RSI {rsi:.0f} 深度超買，短線獲利了結壓力明顯。")
+    elif rsi >= 65:
+        lines.append(f"RSI {rsi:.0f} 偏高，動能尚強但需注意回落。")
+    elif rsi <= 25:
+        lines.append(f"RSI {rsi:.0f} 深度超賣，歷史上此區間反彈機率偏高。")
+    elif rsi <= 35:
+        lines.append(f"RSI {rsi:.0f} 超賣區，留意企穩訊號。")
+    else:
+        lines.append(f"RSI {rsi:.0f} 中性區間，方向待確認。")
+
+    if bear_div:
+        lines.append("⚠ 空頭背離：價格創近高但 RSI 未跟上，動能衰竭警示。")
+    elif bull_div:
+        lines.append("✦ 多頭背離：價格創近低但 RSI 未跟低，下跌動能減弱。")
+
+    # ── MACD ─────────────────────────────────────────────────
+    if macd_cross_bull:
+        lines.append(f"MACD 金叉（Histogram 由負轉正），短線偏多訊號。")
+    elif macd_cross_bear:
+        lines.append(f"MACD 死叉（Histogram 由正轉負），短線偏空訊號。")
+    elif macd_l > macd_s:
+        lines.append(f"MACD 多頭格局（{macd_l:+.3f}），Histogram {macd_h:+.3f}{'擴大' if macd_h > 0 else '縮小'}。")
+    else:
+        lines.append(f"MACD 空頭格局（{macd_l:+.3f}），動能偏弱。")
+
+    # ── 布林帶 ───────────────────────────────────────────────
+    if bb_squeeze:
+        lines.append(f"布林帶收縮（寬度 {bb_w:.1f}%）→ 波動壓縮，可能醞釀突破方向。")
+    elif bb_expand:
+        if bb_pos > 0.6:
+            lines.append(f"布林帶向上擴張（價格 {bb_pos*100:.0f}% 分位）→ 強勢突破上軌。")
+        else:
+            lines.append(f"布林帶向下擴張（價格 {bb_pos*100:.0f}% 分位）→ 下行動能增強。")
+    elif bb_pos > 0.85:
+        lines.append(f"價格貼近布林上軌，注意短線回測中軌壓力。")
+    elif bb_pos < 0.15:
+        lines.append(f"價格貼近布林下軌，可能出現技術反彈。")
+
+    # ── 均線排列 ─────────────────────────────────────────────
+    if ma5 > ma20 > ma60:
+        lines.append(f"MA 多頭排列（5>{ma20:.0f}>60），趨勢向上。")
+    elif ma5 < ma20 < ma60:
+        lines.append(f"MA 空頭排列（5<{ma20:.0f}<60），趨勢向下。")
+
+    # ── 成交量 ───────────────────────────────────────────────
+    if vol_ratio >= 2.0:
+        lines.append(f"成交量爆增（均量 {vol_ratio:.1f}x），留意主力動向。")
+    elif vol_ratio <= 0.5:
+        lines.append(f"成交量萎縮（{vol_ratio:.1f}x），行情觀望為主。")
+
+    # ── 預測與統計 ───────────────────────────────────────────
+    fc_days = analysis.get("forecast_days", 30)
+    lines.append(f"預測 {fc_days} 日後中位價 {med_future:,.2f}（{chg_pct:+.1f}%），"
+                 f"ATR {atr:.2f}。")
+
+    # ── ML + NN 融合 ─────────────────────────────────────────
+    ml_prob = ml_p.get("prob_up")
+    nn_prob = nn_p.get("prob_up")
+    if ml_prob is not None and nn_prob is not None:
+        avg_p = (ml_prob + nn_prob) / 2 * 100
+        lines.append(f"ML {ml_prob*100:.0f}% · NN {nn_prob*100:.0f}%（融合 {avg_p:.0f}%）。")
+    elif ml_prob is not None:
+        lines.append(f"ML 上漲機率 {ml_prob*100:.0f}%（{ml_p.get('label','')}）。")
+
+    if bt and bt.get("n_trades", 0) > 0:
+        lines.append(f"回測命中率 {bt.get('hit_rate_text','N/A')}（{bt['n_trades']} 筆）。")
+
+    # ── 支撐壓力 ─────────────────────────────────────────────
+    lines.append(f"支撐 {sr['support_lo']:.0f}~{sr['support_hi']:.0f}　"
+                 f"壓力 {sr['resistance_lo']:.0f}~{sr['resistance_hi']:.0f}")
+
+    return "\n".join(lines)
+
+
+
+def generate_pdf_bytes(analysis: dict, chart_png_bytes=None) -> bytes:
+    """
+    Generate PDF report using reportlab. Returns True on success.
+    analysis is the full dict from analyze pipeline.
+    """
+    if not REPORTLAB_OK:
+        raise RuntimeError("reportlab 未安裝，無法輸出 PDF。請執行：pip install reportlab")
+
+    # Register CJK font
+    font_name = _register_pdf_cjk_font()
+
+    _pdf_io = io.BytesIO()
+    doc = SimpleDocTemplate(
+        _pdf_io, pagesize=A4,
+        topMargin=15*mm, bottomMargin=15*mm,
+        leftMargin=15*mm, rightMargin=15*mm,
+    )
+    styles = getSampleStyleSheet()
+
+    ps_title = ParagraphStyle(
+        "title", parent=styles["Title"],
+        fontName=font_name, fontSize=18, textColor=rl_colors.HexColor(L_ACCENT),
+        spaceAfter=8,
+    )
+    ps_h2 = ParagraphStyle(
+        "h2", parent=styles["Heading2"],
+        fontName=font_name, fontSize=13, textColor=rl_colors.HexColor(L_ACCENT),
+        spaceBefore=8, spaceAfter=4,
+    )
+    ps_body = ParagraphStyle(
+        "body", parent=styles["Normal"],
+        fontName=font_name, fontSize=10, leading=15,
+    )
+    ps_dim = ParagraphStyle(
+        "dim", parent=styles["Normal"],
+        fontName=font_name, fontSize=9, textColor=rl_colors.HexColor("#777777"),
+    )
+
+    story = []
+    # Header
+    story.append(Paragraph(f"{analysis['name']}  ({analysis['symbol']})", ps_title))
+    story.append(Paragraph(
+        f"分析時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
+        f"預測區間：{analysis.get('forecast_days', 30)} 天",
+        ps_dim
+    ))
+    story.append(Spacer(1, 6*mm))
+
+    # Chart
+    if chart_png_bytes:
+        from io import BytesIO
+        img = RLImage(BytesIO(chart_png_bytes), width=180*mm, height=100*mm)
+        story.append(img)
+        story.append(Spacer(1, 4*mm))
+
+    # Trade plan
+    story.append(Paragraph("一、交易計畫", ps_h2))
+    df = analysis["df"]
+    ind = analysis["indicators"]
+    sr = analysis["sr"]
+    fc = analysis["forecast"]
+    last_price = float(df["Close"].iloc[-1])
+    med_future = float(fc["median"][-1])
+    chg_pct = (med_future - last_price) / last_price * 100
+    atr = float(ind["atr14"].iloc[-1]) if not pd.isna(ind["atr14"].iloc[-1]) else last_price * 0.02
+    sl = last_price - atr*1.5
+    tp = last_price + atr*2.5
+    rr = (tp - last_price) / max(last_price - sl, 1e-9)
+    action = "偏多觀察" if chg_pct > 2 else ("偏空觀察" if chg_pct < -2 else "中性")
+
+    plan_rows = [
+        ["建議",   action],
+        ["現價",   f"{last_price:,.2f}"],
+        ["進場",   f"{last_price:,.2f}"],
+        ["停損",   f"{sl:,.2f}"],
+        ["停利",   f"{tp:,.2f}"],
+        ["RR 比",  f"{rr:.2f} x"],
+        [f"{analysis.get('forecast_days',30)} 日預測", f"{med_future:,.2f}  ({chg_pct:+.1f}%)"],
+    ]
+    if "ml_stats" in analysis and "accuracy" in analysis["ml_stats"]:
+        plan_rows.append(["ML 成功率", f"{analysis['ml_predict']['prob_up']*100:.1f}%"])
+    if "backtest" in analysis:
+        plan_rows.append(["回測方向命中率", analysis['backtest'].get('hit_rate_text', 'N/A')])
+
+    t = RLTable(plan_rows, colWidths=[50*mm, 120*mm])
     t.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#3b5bdb")),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("FONTNAME",(0,0),(-1,-1),fn),("FONTSIZE",(0,0),(-1,-1),9),
-        ("GRID",(0,0),(-1,-1),.5,colors.HexColor("#e5e7eb")),
-        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.HexColor("#f8fafc"),colors.white]),
-        ("ALIGN",(1,0),(-1,-1),"CENTER"),("PADDING",(0,0),(-1,-1),4)]))
-    elems.append(t)
-    if bt.get("n_trades",0)>0:
-        elems.append(Paragraph("回測統計（含交易成本）",H2))
-        bd=[["筆數",str(bt["n_trades"]),"命中率",bt["hit_rate_text"]],
-            ["淨報酬",f"{bt.get('avg_return_after_cost',0):+.2f}%",
-             "Sharpe",f"{bt.get('sharpe',0):.2f}"],
-            ["最大回撤",f"{bt.get('max_drawdown',0):.1f}%",
-             "Profit Factor",f"{bt.get('profit_factor',0):.2f}"]]
-        b=Table([["指標","數值","指標","數值"]]+bd,colWidths=[3.5*cm,4*cm,3.5*cm,4*cm])
-        b.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#059669")),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("FONTNAME",(0,0),(-1,-1),fn),("FONTSIZE",(0,0),(-1,-1),9),
-            ("GRID",(0,0),(-1,-1),.5,colors.HexColor("#e5e7eb")),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.HexColor("#f0fdf4"),colors.white]),
-            ("ALIGN",(1,0),(-1,-1),"CENTER"),("PADDING",(0,0),(-1,-1),4)]))
-        elems.append(b)
-    elems.append(Spacer(1,.5*cm))
-    elems.append(Paragraph("⚠ 本報告僅供研究參考，不構成投資建議，操作須自行評估風險。",NM))
-    doc.build(elems); return buf.getvalue()
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BACKGROUND", (0, 0), (0, -1), rl_colors.HexColor("#f0f2f7")),
+        ("TEXTCOLOR",  (0, 0), (0, -1), rl_colors.HexColor(L_ACCENT)),
+        ("GRID",       (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#c0c0c0")),
+        ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING",   (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 4*mm))
+
+    # Key levels
+    story.append(Paragraph("二、關鍵價位", ps_h2))
+    lvl_rows = [
+        ["壓力上緣", f"{sr['resistance_hi']:,.2f}"],
+        ["壓力下緣", f"{sr['resistance_lo']:,.2f}"],
+        ["現價",     f"{last_price:,.2f}"],
+        ["支撐上緣", f"{sr['support_hi']:,.2f}"],
+        ["支撐下緣", f"{sr['support_lo']:,.2f}"],
+    ]
+    t2 = RLTable(lvl_rows, colWidths=[50*mm, 120*mm])
+    t2.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("BACKGROUND", (0, 0), (0, -1), rl_colors.HexColor("#f0f2f7")),
+        ("TEXTCOLOR",  (0, 0), (0, -1), rl_colors.HexColor(L_ACCENT)),
+        ("GRID",       (0, 0), (-1, -1), 0.3, rl_colors.HexColor("#c0c0c0")),
+    ]))
+    story.append(t2)
+    story.append(Spacer(1, 4*mm))
+
+    # Reasons
+    story.append(Paragraph("三、趨勢判斷與理由", ps_h2))
+    reason_text = analysis.get("reason_text", "—")
+    for line in reason_text.split("\n"):
+        if line.strip():
+            story.append(Paragraph(line.strip(), ps_body))
+
+    # News
+    news = analysis.get("news", [])
+    if news:
+        story.append(Spacer(1, 4*mm))
+        story.append(Paragraph("四、新聞重點", ps_h2))
+        for i, it in enumerate(news[:5], 1):
+            src_tag = f"【{it.get('source','')}】" if it.get("source") else ""
+            story.append(Paragraph(f"{i}. {src_tag}{it.get('title','')}", ps_body))
+
+    # AI commentary
+    ai_text = analysis.get("ai_commentary", "")
+    if ai_text:
+        story.append(Spacer(1, 4*mm))
+        story.append(Paragraph("五、AI 綜合評論", ps_h2))
+        for para in ai_text.split("\n"):
+            if para.strip():
+                story.append(Paragraph(para.strip(), ps_body))
+
+    # Footer
+    story.append(Spacer(1, 8*mm))
+    story.append(Paragraph(
+        "本報告由 Stock Analyzer Pro 自動生成，僅供研究與學習，"
+        "不構成任何投資建議。投資需謹慎，盈虧自負。",
+        ps_dim
+    ))
+
+    doc.build(story)
+    return _pdf_io.getvalue()
+
+
+_pdf_cjk_font_registered = False
+
+
 
 # ── Show result ────────────────────────────────────────────────────────────
 def show(r):
@@ -780,13 +979,19 @@ def show(r):
         except: st.caption("PNG需kaleido")
     with e2:
         try:
-            pdf=to_pdf(r,fig)
-            if pdf:
-                st.download_button("📄 PDF", pdf,
+            # Get chart as PNG for PDF embedding
+            try:
+                _chart_png = fig.to_image(format="png", width=1400, height=700, scale=1.5)
+            except Exception:
+                _chart_png = None
+            _pdf = generate_pdf_bytes(r, _chart_png)
+            if _pdf:
+                st.download_button("📄 PDF", _pdf,
                     file_name=f"{sym.split('.')[0]}_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf", use_container_width=True)
             else: st.caption("PDF需reportlab")
-        except: st.caption("PDF需reportlab")
+        except Exception as _pe:
+            st.caption(f"PDF: {_pe}")
 
     # ── Analysis tabs ──
     t1,t2,t3,t4,t5=st.tabs(["📊 ML / 回測","🔍 技術解讀","📋 基本面","📰 新聞","📍 關鍵價位"])
@@ -836,6 +1041,15 @@ def show(r):
             else: st.warning("樣本不足")
 
     with t2:
+        # Show full reason text from desktop-quality analysis
+        try:
+            reason = build_reason_text(r)
+            if reason:
+                for line in reason.split("\n"):
+                    if line.strip():
+                        st.markdown(line)
+                st.divider()
+        except Exception: pass
         _render_tech(r,df,ind,fc,ml_p,bt,last,med,fc_c,rsi_v)
 
     with t3:
