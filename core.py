@@ -3,6 +3,7 @@
 # This file has ZERO PySide6 / GUI dependencies — pure Python data layer
 
 import os, sys, json, time, warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Tuple
@@ -653,18 +654,16 @@ def run_analysis(symbol: str, lookback_years: int = 3,
     drift = compute_drift_bias(ind, ml_pred, {}, {}, {}, weights)
     fc = simple_forecast(df, days=forecast_days, n_paths=150, drift_bias=drift)
 
-    # 6. Backtest
-    _prog(6, TOTAL, "歷史回測…")
-    bt = backtest_directional(df, ind, sr, horizon=horizon)
+    # 6+7. Backtest + News + Fundamental in parallel
+    _prog(6, TOTAL, "回測 / 新聞 / 基本面（平行抓取）…")
 
-    # 7. News
-    _prog(7, TOTAL, "抓取新聞…")
-    news = fetch_news(sym, name)
-    ns   = news_sentiment(news)
-
-    # Fundamental
-    fund = {}
-    if YF_OK:
+    def _do_backtest(): return backtest_directional(df, ind, sr, horizon=horizon)
+    def _do_news():
+        items = fetch_news(sym, name)
+        return items, news_sentiment(items)
+    def _do_fund():
+        fund = {}
+        if not YF_OK: return fund
         try:
             info = yf.Ticker(sym).info or {}
             for k, lbl in [("trailingPE","pe_ratio"),("trailingEps","eps"),
@@ -674,8 +673,17 @@ def run_analysis(symbol: str, lookback_years: int = 3,
                 if v is not None:
                     try: fund[lbl] = float(v)
                     except Exception: pass
-        except Exception:
-            pass
+        except Exception: pass
+        return fund
+
+    bt = news = ns = fund = None
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fbt   = ex.submit(_do_backtest)
+        fnews = ex.submit(_do_news)
+        ffund = ex.submit(_do_fund)
+        bt   = fbt.result()
+        news, ns = fnews.result()
+        fund = ffund.result()
 
     return {
         "symbol": sym, "name": name, "df": df,
