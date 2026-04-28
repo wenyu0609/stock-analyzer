@@ -59,120 +59,41 @@ CPP = "#0f1120" if D else "#f5f7fc"
 CGR = "#2d3154" if D else "#e2e8f0"
 CTX = "#8890aa" if D else "#6b7280"
 
-st.markdown(f"""<style>
-[data-testid="stAppViewContainer"]{{background:{BG}}}
-[data-testid="stSidebar"]{{background:{SB}}}
-[data-testid="stHeader"]{{background:{BG}}}
-html,body,[class*="css"]{{font-family:'Microsoft JhengHei','PingFang TC',sans-serif;color:{TX}}}
-h1{{color:{AC};font-size:1.45rem;font-weight:700;margin-bottom:2px}}
-.stButton>button{{background:{CD};border:1px solid {BD};color:{TX};border-radius:8px;transition:.15s}}
-.stButton>button:hover{{border-color:{AC};color:{AC}}}
-.stTextInput>div>div>input{{background:{CD};border:1px solid {BD};color:{TX};border-radius:8px}}
-.stTextInput>div>div>input:focus{{border-color:{AC}}}
-.card{{background:{CD};border:1px solid {BD};border-radius:10px;padding:12px 16px;margin-bottom:8px}}
-.lbl{{color:{DM};font-size:.74rem;margin-bottom:2px}}
-.val{{color:{TX};font-size:1.2rem;font-weight:700}}
-.sub{{color:{AC};font-size:.8rem}}
-.bull{{background:{"#05966918" if D else "#dcfce7"};color:{OK};padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}}
-.bear{{background:{"#ef444418" if D else "#fee2e2"};color:{ER};padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}}
-.neut{{background:{"#f59e0b18" if D else "#fef9c3"};color:{WA};padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}}
-.bhi{{background:{"#6c8ef518" if D else "#ede9fe"};color:{AC};padding:2px 10px;border-radius:20px;display:inline-block}}
-.blo{{background:{"#ef444418" if D else "#fee2e2"};color:{ER};padding:2px 10px;border-radius:20px;display:inline-block}}
-.ni{{border-left:3px solid {BD};padding:5px 10px;margin:5px 0;font-size:.84rem;color:{DM}}}
-.ni a{color:{DM};text-decoration:none}
-.ni:hover{border-color:{AC}}
-/* ── Streamlit 原生元件文字顏色強制覆蓋 ── */
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li,
-[data-testid="stMarkdownContainer"] span,
-[data-testid="stText"],
-[data-testid="stCaption"],
-label,
-.stSlider label,
-.stCheckbox label,
-.stRadio label,
-[data-baseweb="select"] *,
-[data-baseweb="input"] *,
-[data-testid="stSelectbox"] *,
-[data-testid="stNumberInput"] *,
-[data-testid="stTextInput"] * {
-    color:{TX} !important;
-}
-/* Metric */
-[data-testid="stMetricValue"],
-[data-testid="stMetricLabel"],
-[data-testid="stMetricDelta"] {
-    color:{TX} !important;
-}
-/* Expander */
-[data-testid="stExpander"] summary,
-[data-testid="stExpander"] p {
-    color:{TX} !important;
-}
-/* Tab labels */
-[data-baseweb="tab"] button,
-[data-baseweb="tab"] span {
-    color:{TX} !important;
-}
-/* Selectbox dropdown items */
-[data-baseweb="popover"] *,
-[role="option"] {
-    background:{CD} !important;
-    color:{TX} !important;
-}
-/* Sidebar text */
-[data-testid="stSidebarContent"] * {
-    color:{TX};
-}
-[data-testid="stSidebarContent"] h2,
-[data-testid="stSidebarContent"] h3,
-[data-testid="stSidebarContent"] h4 {
-    color:{AC} !important;
-}
-/* Caption / dim text */
-[data-testid="stCaptionContainer"] {
-    color:{DM} !important;
-}
-/* Download button */
-[data-testid="stDownloadButton"] button {
-    background:{CD};border:1px solid {BD};color:{TX};border-radius:8px;
-}
-/* Progress bar */
-[data-testid="stProgressBar"] > div {
-    background:{AC};
-}
-/* Divider */
-hr {border-top:1px solid {BD} !important;}
-
-/* ── Force Streamlit native widget text colours ── */
-[data-testid="stMetricValue"],
-[data-testid="stMetricLabel"],
-[data-testid="stMetricDelta"],
-[data-testid="baseButton-secondary"],
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li,
-[data-testid="stMarkdownContainer"] span,
-.stSelectbox label, .stSlider label,
-.stCheckbox label, .stRadio label,
-.stTextInput label, .stNumberInput label,
-.stCaption, .stText, p, span, label, div {{
-    color: {TX} !important;
-}}
-[data-testid="stExpander"] summary p {{
-    color: {TX} !important;
-}}
-[data-testid="stSelectbox"] div[data-baseweb="select"] span,
-[data-testid="stSelectbox"] div[data-baseweb="select"] div {{
-    color: {TX} !important;
-    background: {CD} !important;
-}}
-[data-testid="stMetricValue"] {{
-    color: {TX} !important;
-    font-size: 1.4rem !important;
-}}
-[data-testid="stMetricLabel"] div {{
-    color: {DM} !important;
-}}
+st.markdown("""<style>
+[data-testid="stAppViewContainer"]{background:"""+BG+"""}
+[data-testid="stSidebar"]{background:"""+SB+"""}
+[data-testid="stHeader"]{background:"""+BG+"""}
+html,body,[class*="css"]{font-family:'Microsoft JhengHei','PingFang TC',sans-serif;color:"""+TX+"""}
+h1{color:"""+AC+""";font-size:1.45rem;font-weight:700;margin-bottom:2px}
+.stButton>button{background:"""+CD+""";border:1px solid """+BD+""";color:"""+TX+""";border-radius:8px;transition:.15s}
+.stButton>button:hover{border-color:"""+AC+""";color:"""+AC+"""}
+.stTextInput>div>div>input{background:"""+CD+""";border:1px solid """+BD+""";color:"""+TX+""";border-radius:8px}
+.stTextInput>div>div>input:focus{border-color:"""+AC+"""}
+.card{background:"""+CD+""";border:1px solid """+BD+""";border-radius:10px;padding:12px 16px;margin-bottom:8px}
+.lbl{color:"""+DM+""";font-size:.74rem;margin-bottom:2px}
+.val{color:"""+TX+""";font-size:1.2rem;font-weight:700}
+.sub{color:"""+AC+""";font-size:.8rem}
+.bull{background:"""+("rgba(5,150,105,0.1)" if D else "#dcfce7")+""";color:"""+OK+""";padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}
+.bear{background:"""+("rgba(239,68,68,0.1)" if D else "#fee2e2")+""";color:"""+ER+""";padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}
+.neut{background:"""+("rgba(245,158,11,0.1)" if D else "#fef9c3")+""";color:"""+WA+""";padding:3px 12px;border-radius:20px;font-weight:700;display:inline-block}
+.bhi{background:"""+("rgba(108,142,245,0.1)" if D else "#ede9fe")+""";color:"""+AC+""";padding:2px 10px;border-radius:20px;display:inline-block}
+.blo{background:"""+("rgba(239,68,68,0.1)" if D else "#fee2e2")+""";color:"""+ER+""";padding:2px 10px;border-radius:20px;display:inline-block}
+.ni{border-left:3px solid """+BD+""";padding:5px 10px;margin:5px 0;font-size:.84rem;color:"""+DM+"""}
+.ni a{color:"""+DM+""";text-decoration:none}
+.ni:hover{border-color:"""+AC+"""}
+hr{border-top:1px solid """+BD+""" !important}
+/* Force all text colours */
+*{color:"""+TX+"""}
+[data-testid="stMetricValue"]{color:"""+TX+""" !important;font-size:1.4rem}
+[data-testid="stMetricLabel"] div{color:"""+DM+""" !important}
+[data-testid="stSidebarContent"] *{color:"""+TX+"""}
+[data-testid="stSidebarContent"] h4{color:"""+AC+""" !important}
+[data-testid="stCaptionContainer"]{color:"""+DM+""" !important}
+[data-testid="stExpander"] summary p{color:"""+TX+""" !important}
+[data-baseweb="tab"] span{color:"""+TX+""" !important}
+[role="option"]{background:"""+CD+""" !important;color:"""+TX+""" !important}
+[data-testid="stDownloadButton"] button{background:"""+CD+""";border:1px solid """+BD+""";color:"""+TX+""";border-radius:8px}
+[data-testid="stProgressBar"] > div{background:"""+AC+"""}
 </style>""", unsafe_allow_html=True)
 
 # ── Helpers ────────────────────────────────────────────────────────────────
