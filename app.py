@@ -79,8 +79,100 @@ h1{{color:{AC};font-size:1.45rem;font-weight:700;margin-bottom:2px}}
 .bhi{{background:{"#6c8ef518" if D else "#ede9fe"};color:{AC};padding:2px 10px;border-radius:20px;display:inline-block}}
 .blo{{background:{"#ef444418" if D else "#fee2e2"};color:{ER};padding:2px 10px;border-radius:20px;display:inline-block}}
 .ni{{border-left:3px solid {BD};padding:5px 10px;margin:5px 0;font-size:.84rem;color:{DM}}}
-.ni a{{color:{DM};text-decoration:none}}
-.ni:hover{{border-color:{AC}}}
+.ni a{color:{DM};text-decoration:none}
+.ni:hover{border-color:{AC}}
+/* ── Streamlit 原生元件文字顏色強制覆蓋 ── */
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stText"],
+[data-testid="stCaption"],
+label,
+.stSlider label,
+.stCheckbox label,
+.stRadio label,
+[data-baseweb="select"] *,
+[data-baseweb="input"] *,
+[data-testid="stSelectbox"] *,
+[data-testid="stNumberInput"] *,
+[data-testid="stTextInput"] * {
+    color:{TX} !important;
+}
+/* Metric */
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+[data-testid="stMetricDelta"] {
+    color:{TX} !important;
+}
+/* Expander */
+[data-testid="stExpander"] summary,
+[data-testid="stExpander"] p {
+    color:{TX} !important;
+}
+/* Tab labels */
+[data-baseweb="tab"] button,
+[data-baseweb="tab"] span {
+    color:{TX} !important;
+}
+/* Selectbox dropdown items */
+[data-baseweb="popover"] *,
+[role="option"] {
+    background:{CD} !important;
+    color:{TX} !important;
+}
+/* Sidebar text */
+[data-testid="stSidebarContent"] * {
+    color:{TX};
+}
+[data-testid="stSidebarContent"] h2,
+[data-testid="stSidebarContent"] h3,
+[data-testid="stSidebarContent"] h4 {
+    color:{AC} !important;
+}
+/* Caption / dim text */
+[data-testid="stCaptionContainer"] {
+    color:{DM} !important;
+}
+/* Download button */
+[data-testid="stDownloadButton"] button {
+    background:{CD};border:1px solid {BD};color:{TX};border-radius:8px;
+}
+/* Progress bar */
+[data-testid="stProgressBar"] > div {
+    background:{AC};
+}
+/* Divider */
+hr {border-top:1px solid {BD} !important;}
+
+/* ── Force Streamlit native widget text colours ── */
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+[data-testid="stMetricDelta"],
+[data-testid="baseButton-secondary"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span,
+.stSelectbox label, .stSlider label,
+.stCheckbox label, .stRadio label,
+.stTextInput label, .stNumberInput label,
+.stCaption, .stText, p, span, label, div {{
+    color: {TX} !important;
+}}
+[data-testid="stExpander"] summary p {{
+    color: {TX} !important;
+}}
+[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+[data-testid="stSelectbox"] div[data-baseweb="select"] div {{
+    color: {TX} !important;
+    background: {CD} !important;
+}}
+[data-testid="stMetricValue"] {{
+    color: {TX} !important;
+    font-size: 1.4rem !important;
+}}
+[data-testid="stMetricLabel"] div {{
+    color: {DM} !important;
+}}
 </style>""", unsafe_allow_html=True)
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -184,31 +276,44 @@ def sidebar():
 
         st.divider()
         st.markdown("#### 自選股")
-        wl=st.session_state.watchlist
+        wl = list(st.session_state.watchlist)   # snapshot, avoids mutation mid-render
         if wl:
-            idx=st.selectbox("",options=list(range(len(wl))),
-                format_func=lambda i: (
-                    f"{TW_NAME_CACHE.get(wl[i],wl[i])} ({wl[i]})"
-                    if TW_NAME_CACHE.get(wl[i],wl[i])!=wl[i]
-                    else wl[i]
-                ),
-                label_visibility="collapsed",key="wli")
-            c1,c2,c3=st.columns(3)
-            if c1.button("載入",use_container_width=True):
-                st.session_state.si=wl[idx]
-                st.session_state._trigger=True; st.rerun()
-            if c2.button("加入",use_container_width=True):
-                cd=(st.session_state.get("si","")).strip().upper()
+            # Build static label list — NO lambda, NO format_func
+            wl_labels = []
+            for _c in wl:
+                _n = TW_NAME_CACHE.get(_c, "")
+                wl_labels.append(f"{_n} ({_c})" if (_n and _n != _c) else _c)
+
+            # selectbox on string labels; derive index from selected value
+            _prev = st.session_state.get("_wl_sel", wl_labels[0])
+            if _prev not in wl_labels:
+                _prev = wl_labels[0]
+            _sel = st.selectbox("", wl_labels,
+                index=wl_labels.index(_prev),
+                label_visibility="collapsed", key="wl_sel")
+            # Decode selected code from label
+            _sel_code = wl[wl_labels.index(_sel)]
+
+            c1,c2,c3 = st.columns(3)
+            if c1.button("載入", use_container_width=True):
+                st.session_state._pending_sym = _sel_code
+                st.rerun()
+            if c2.button("加入", use_container_width=True):
+                cd = st.session_state.get("si","").strip().upper()
                 if cd and cd not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(cd); st.rerun()
-            if c3.button("移除",use_container_width=True):
-                st.session_state.watchlist.pop(idx); st.rerun()
+                    st.session_state.watchlist.append(cd)
+                    st.rerun()
+            if c3.button("移除", use_container_width=True):
+                _ri = wl_labels.index(_sel)
+                st.session_state.watchlist.pop(_ri)
+                st.rerun()
         else:
             st.caption("自選股為空")
-            if st.button("加入當前代碼",use_container_width=True):
-                cd=(st.session_state.get("si","")).strip().upper()
+            if st.button("加入當前代碼", use_container_width=True):
+                cd = st.session_state.get("si","").strip().upper()
                 if cd and cd not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(cd); st.rerun()
+                    st.session_state.watchlist.append(cd)
+                    st.rerun()
         if st.button("📊 批次分析全部",use_container_width=True):
             st.session_state._do_batch=True
 
@@ -543,6 +648,14 @@ def batch():
 
 # ── Main ───────────────────────────────────────────────────────────────────
 sym,abtn=sidebar()
+
+# 處理自選股載入（用中間變數，不直接改 widget key）
+if st.session_state.get("_pending_sym"):
+    _pending = st.session_state.pop("_pending_sym")
+    with st.spinner(f"分析 {_pending}…"):
+        analyze(_pending)
+    st.rerun()
+
 _s=st.session_state.get("si","").strip().upper()
 if (abtn or st.session_state.get("_trigger")) and _s:
     st.session_state._trigger=False
