@@ -32,7 +32,7 @@ _DEF = dict(
     weights={"technical":40,"ml":35,"news":15,"fundamental":10},
     forecast_days=30, lookback_years=3, train_ratio=0.8,
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
-    theme="暗色", names_loaded=False, _trigger=False,
+    theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
 )
 for k,v in _DEF.items():
     if k not in st.session_state: st.session_state[k]=v
@@ -651,7 +651,8 @@ sym,abtn=sidebar()
 
 # 處理自選股載入（用中間變數，不直接改 widget key）
 if st.session_state.get("_pending_sym"):
-    _pending = st.session_state.pop("_pending_sym")
+    _pending = st.session_state.get("_pending_sym", "")
+    st.session_state["_pending_sym"] = ""
     with st.spinner(f"分析 {_pending}…"):
         analyze(_pending)
     st.rerun()
@@ -663,9 +664,20 @@ if (abtn or st.session_state.get("_trigger")) and _s:
         analyze(_s)
     st.rerun()
 if st.session_state.get("_do_batch"):
-    st.session_state._do_batch=False; batch()
+    st.session_state._do_batch=False
+    try:
+        batch()
+    except Exception as _e:
+        st.error(f"批次錯誤：{type(_e).__name__}: {_e}")
+        import traceback
+        st.code(traceback.format_exc())
 elif st.session_state.result:
-    show(st.session_state.result)
+    try:
+        show(st.session_state.result)
+    except Exception as _e:
+        st.error(f"顯示錯誤：{type(_e).__name__}: {_e}")
+        import traceback
+        st.code(traceback.format_exc())
 else:
     st.markdown(f"""<div style='text-align:center;padding:50px 20px'>
         <div style='font-size:3.5rem'>📈</div>
