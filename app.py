@@ -510,7 +510,7 @@ def sidebar():
         st.divider()
 
         # Chart options
-        with st.expander("📊 圖表顯示",expanded=False):
+        with st.expander("圖表顯示",expanded=False):
             st.session_state.chart_style=st.radio("",["K棒","曲線"],
                 horizontal=True,
                 index=0 if st.session_state.chart_style=="K棒" else 1)
@@ -529,7 +529,7 @@ def sidebar():
             st.caption("💡 取消勾選可隱藏副圖；可在分析結果頁獨立放大")
 
         # Analysis params
-        with st.expander("⚙ 分析參數",expanded=False):
+        with st.expander("分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
             _ly_prev = st.session_state.lookback_years
             st.session_state.forecast_days =st.slider("預測天數",5,90,st.session_state.forecast_days)
@@ -548,21 +548,30 @@ def sidebar():
                 if st.session_state.result:
                     _sym = st.session_state.result.get("symbol","").split(".")[0]
                     if _sym:
-                        st.session_state._trigger = True
-                        st.session_state.si = _sym
+                        st.session_state._pending_sym = _sym
 
         # Weight settings
-        with st.expander("⚖ 分析權重",expanded=False):
+        with st.expander("分析權重",expanded=False):
             st.caption("四項總計須為 100%，影響趨勢預測方向")
             w=st.session_state.weights
-            wt=st.slider("技術指標%",0,100,w["technical"],key="wt")
-            wm=st.slider("ML/NN%",   0,100,w["ml"],       key="wm")
-            wn=st.slider("新聞情緒%",0,100,w["news"],     key="wn")
-            wf=st.slider("基本面%",  0,100,w["fundamental"],key="wf")
+            # Each row: slider on left, number input on right
+            def _weight_row(label, key_s, key_n, val):
+                _c1, _c2 = st.columns([3,1])
+                _sv = _c1.slider(label, 0, 100, val, key=key_s, label_visibility="visible")
+                _nv = _c2.number_input("", 0, 100, _sv, step=1, key=key_n,
+                                        label_visibility="collapsed")
+                # number_input takes precedence if user typed in it
+                return int(_nv) if _nv != _sv else int(_sv)
+            wt = _weight_row("技術指標%", "wt_s", "wt_n", w["technical"])
+            wm = _weight_row("ML/NN%",   "wm_s", "wm_n", w["ml"])
+            wn = _weight_row("新聞情緒%","wn_s", "wn_n", w["news"])
+            wf = _weight_row("基本面%",  "wf_s", "wf_n", w["fundamental"])
             tot=wt+wm+wn+wf
-            c=OK if tot==100 else ER
+            _wc=OK if tot==100 else ER
             st.markdown(
-                f"<span style='color:{c}'>{'✅' if tot==100 else '⚠'} 總計 {tot}%</span>",
+                "<span style='color:"+_wc+"'>"
+                + ("✅" if tot==100 else "⚠")
+                + f" 總計 {tot}%</span>",
                 unsafe_allow_html=True)
             if st.button("▶ Apply 套用",use_container_width=True,disabled=(tot!=100)):
                 st.session_state.weights={
@@ -939,27 +948,17 @@ def show(r):
             f"{'<div class=sub>'+sub+'</div>' if sub else ''}"
             f"</div>", unsafe_allow_html=True)
 
-    # ── Chart controls row ──
-    cc1,cc2,cc3,cc4,cc5 = st.columns([1,1,1,1,2])
-    with cc1:
-        if st.button("MACD " + ("✅" if st.session_state.show_macd else "⬜"),
-                     use_container_width=True, help="切換 MACD 副圖"):
-            st.session_state.show_macd = not st.session_state.show_macd
-            st.rerun()
-    with cc2:
-        if st.button("RSI " + ("✅" if st.session_state.show_rsi else "⬜"),
-                     use_container_width=True, help="切換 RSI 副圖"):
-            st.session_state.show_rsi = not st.session_state.show_rsi
-            st.rerun()
-    with cc3:
-        show_macd_pop = st.button("📊 MACD ↗", use_container_width=True,
-                                   help="獨立放大 MACD 圖")
-    with cc4:
-        show_rsi_pop  = st.button("📈 RSI ↗",  use_container_width=True,
-                                   help="獨立放大 RSI 圖")
-    with cc5:
-        st.caption(
-            "🖥 滾輪縮放・左鍵平移  |  📱 雙指縮放・單指平移")
+    # ── Chart controls (inline, compact) ──
+    _cc1, _cc2, _cc3, _cc4, _cc5 = st.columns([1,1,1,1,3])
+    _new_macd = _cc1.checkbox("MACD", st.session_state.show_macd, key="_chk_macd")
+    _new_rsi  = _cc2.checkbox("RSI",  st.session_state.show_rsi,  key="_chk_rsi")
+    if _new_macd != st.session_state.show_macd:
+        st.session_state.show_macd = _new_macd; st.rerun()
+    if _new_rsi  != st.session_state.show_rsi:
+        st.session_state.show_rsi  = _new_rsi;  st.rerun()
+    show_macd_pop = _cc3.button("MACD 展開", use_container_width=True)
+    show_rsi_pop  = _cc4.button("RSI 展開",  use_container_width=True)
+    _cc5.caption("🖥 滾輪縮放・左鍵平移  📱 雙指縮放")
 
     # Main chart
     fig=build_chart(r,
