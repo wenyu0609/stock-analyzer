@@ -83,33 +83,30 @@ _CSS_RULES = """
    AND protect icon spans from our font override.
 ================================================================ */
 
-/* Step 1: Hide the broken icon span completely */
-details summary span:first-child,
-details summary > span:first-of-type {{
-    display: none !important;
-    visibility: hidden !important;
-    width: 0 !important;
-    height: 0 !important;
-    overflow: hidden !important;
-    position: absolute !important;
+/* Step 1: Fix expander icon — restore Material Icons font on icon span
+   Root cause: our global span font-family override breaks Material Icons ligatures
+   Fix: explicitly restore Material Icons font on the summary spans */
+details summary {{
+    list-style: none !important;
 }}
-/* Also hide via data-testid if available */
-[data-testid="stExpander"] summary > span:first-child,
-[data-testid="stExpander"] summary > div:first-child > span:first-child {{
+details summary::-webkit-details-marker {{
     display: none !important;
-    visibility: hidden !important;
 }}
-/* Add a CSS triangle instead */
-details summary::before {{
-    content: "▶ " !important;
-    font-family: sans-serif !important;
-    color: {AC} !important;
-    font-size: 11px !important;
+/* Restore Material Icons font on ALL spans inside summary
+   so "keyboard_double_arrow_right" renders as an icon not text */
+details summary > span {{
+    font-family: 'Material Icons', 'Material Icons Round',
+                 'Material Symbols Rounded', serif !important;
+    font-feature-settings: "liga" 1 !important;
+    -webkit-font-feature-settings: "liga" 1 !important;
+    text-rendering: optimizeLegibility !important;
+}}
+/* The label text is in a <p> inside a <div> after the icon span — keep visible */
+details summary div,
+details summary p {{
+    font-family: 'Microsoft JhengHei','PingFang TC','Noto Sans TC',sans-serif !important;
+    color: {TX} !important;
     display: inline !important;
-    visibility: visible !important;
-}}
-details[open] summary::before {{
-    content: "▼ " !important;
 }}
 
 /* Step 2: App background */
