@@ -34,6 +34,7 @@ _DEF = dict(
     forecast_days=30, lookback_years=3, train_ratio=0.8,
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
     show_macd=True, show_rsi=True,
+    show_ma5=True, show_ma20=True, show_ma60=True,
     theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
     _last_params={},  # tracks params used for current result
 )
@@ -167,9 +168,30 @@ h2, h3, h4 {{ color:{TX} !important; }}
     border:1px solid {BD} !important;
     border-radius:8px !important;
 }}
-[data-testid="stExpander"] summary {{ color:{TX} !important; }}
-[data-testid="stExpander"] summary p {{ color:{TX} !important; }}
+[data-testid="stExpander"] summary {{ color:{TX} !important; background:{CD} !important; }}
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary svg {{ color:{TX} !important; fill:{TX} !important; }}
+[data-testid="stExpander"] > div,
+[data-testid="stExpander"] > div > div {{ background:{CD} !important; }}
 [data-testid="stExpander"] p {{ color:{TX} !important; }}
+[data-testid="stExpander"] label {{ color:{TX} !important; }}
+[data-testid="stExpander"] span {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stCheckbox > label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stRadio label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stSlider label {{ color:{TX} !important; }}
+[data-testid="stExpander"] > div > div {{ background:{CD} !important; }}
+[data-testid="stExpander"] input {{ background:{BG} !important; color:{TX} !important; }}
+[data-testid="stExpander"] span {{ color:{TX} !important; }}
+[data-testid="stExpander"] label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stCheckbox label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stRadio label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stSlider label {{ color:{TX} !important; }}
+[data-testid="stExpander"] .stCaption {{ color:{DM} !important; }}
+[data-testid="stExpander"] [data-testid="stCaptionContainer"] p {{ color:{DM} !important; }}
+[data-testid="stExpander"] input {{ background:{BG} !important; color:{TX} !important; border-color:{BD} !important; }}
+[data-testid="stExpander"] [data-baseweb="select"] > div {{ background:{BG} !important; color:{TX} !important; }}
+[data-testid="stExpander"] [data-baseweb="select"] span {{ color:{TX} !important; }}
 
 /* ── Tabs ── */
 [data-baseweb="tab"] span {{ color:{DM} !important; }}
@@ -296,7 +318,8 @@ def action_badge(s):
 
 # ── Chart builder ──────────────────────────────────────────────────────────
 def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
-                show_macd=True, show_rsi=True):
+                show_macd=True, show_rsi=True,
+                show_ma5=True, show_ma20=True, show_ma60=True):
     df=r["df"]; ind=r["indicators"]; sr=r["sr"]; fc=r["forecast"]
     name=r["name"]; sym=r["symbol"]
 
@@ -328,13 +351,16 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
         fig.add_trace(go.Scatter(x=df.index,y=df["Close"],mode="lines",
             line=dict(color=AC,width=1.5),name="收盤"),row=1,col=1)
 
-    # MA lines
-    fig.add_trace(go.Scatter(x=df.index,y=ind["ma5"],
-        line=dict(color="rgba(108,142,245,0.7)",width=1),name="MA5"),row=1,col=1)
-    fig.add_trace(go.Scatter(x=df.index,y=ind["ma20"],
-        line=dict(color="rgba(251,191,36,0.7)",width=1),name="MA20"),row=1,col=1)
-    fig.add_trace(go.Scatter(x=df.index,y=ind["ma60"],
-        line=dict(color="rgba(248,113,113,0.7)",width=1),name="MA60"),row=1,col=1)
+    # MA lines (visibility controlled)
+    if show_ma5:
+        fig.add_trace(go.Scatter(x=df.index,y=ind["ma5"],
+            line=dict(color="rgba(108,142,245,0.8)",width=1),name="MA5"),row=1,col=1)
+    if show_ma20:
+        fig.add_trace(go.Scatter(x=df.index,y=ind["ma20"],
+            line=dict(color="rgba(251,191,36,0.8)",width=1),name="MA20"),row=1,col=1)
+    if show_ma60:
+        fig.add_trace(go.Scatter(x=df.index,y=ind["ma60"],
+            line=dict(color="rgba(248,113,113,0.8)",width=1),name="MA60"),row=1,col=1)
 
     if bb:
         fig.add_trace(go.Scatter(x=df.index,y=ind["bb_up"],
@@ -401,7 +427,7 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
         margin=dict(l=0,r=0,t=30,b=0),
         hovermode="x unified",
         # Scroll zoom enabled — mouse wheel to zoom on desktop
-        dragmode="pan",  # default drag = pan (move chart)
+        dragmode="zoom",  # default = zoom box; pan via toolbar
     )
     for i in range(1,rows+1):
         fig.update_xaxes(gridcolor=CGR,row=i,col=1,
@@ -510,7 +536,7 @@ def sidebar():
         st.divider()
 
         # Chart options
-        with st.expander("圖表顯示",expanded=False):
+        with st.expander(">> 圖表顯示",expanded=False):
             st.session_state.chart_style=st.radio("",["K棒","曲線"],
                 horizontal=True,
                 index=0 if st.session_state.chart_style=="K棒" else 1)
@@ -520,16 +546,21 @@ def sidebar():
                 st.session_state.show_sr   =st.checkbox("支撐壓力",st.session_state.show_sr)
             with c2:
                 st.session_state.show_band =st.checkbox("預測信賴帶",st.session_state.show_band)
+            st.markdown("**均線**")
+            _ma_c1,_ma_c2,_ma_c3=st.columns(3)
+            st.session_state.show_ma5 =_ma_c1.checkbox("MA5",  st.session_state.show_ma5)
+            st.session_state.show_ma20=_ma_c2.checkbox("MA20", st.session_state.show_ma20)
+            st.session_state.show_ma60=_ma_c3.checkbox("MA60", st.session_state.show_ma60)
             st.markdown("**副圖**")
             c1,c2=st.columns(2)
             with c1:
                 st.session_state.show_macd=st.checkbox("MACD",st.session_state.show_macd)
             with c2:
                 st.session_state.show_rsi =st.checkbox("RSI", st.session_state.show_rsi)
-            st.caption("💡 取消勾選可隱藏副圖；可在分析結果頁獨立放大")
+            st.caption("取消勾選可隱藏；副圖可在主頁面獨立展開")
 
         # Analysis params
-        with st.expander("分析參數",expanded=False):
+        with st.expander(">> 分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
             _ly_prev = st.session_state.lookback_years
             st.session_state.forecast_days =st.slider("預測天數",5,90,st.session_state.forecast_days)
@@ -551,7 +582,7 @@ def sidebar():
                         st.session_state._pending_sym = _sym
 
         # Weight settings
-        with st.expander("分析權重",expanded=False):
+        with st.expander(">> 分析權重",expanded=False):
             st.caption("四項總計須為 100%，影響趨勢預測方向")
             w=st.session_state.weights
             # Each row: slider on left, number input on right
@@ -967,7 +998,10 @@ def show(r):
         sr_on    =st.session_state.show_sr,
         band     =st.session_state.show_band,
         show_macd=st.session_state.show_macd,
-        show_rsi =st.session_state.show_rsi)
+        show_rsi =st.session_state.show_rsi,
+        show_ma5 =st.session_state.show_ma5,
+        show_ma20=st.session_state.show_ma20,
+        show_ma60=st.session_state.show_ma60)
 
     # Chart config:
     # - scrollZoom=True: mouse wheel zooms on desktop
