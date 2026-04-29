@@ -35,6 +35,7 @@ _DEF = dict(
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
     show_macd=True, show_rsi=True,
     theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
+    _last_params={},  # tracks params used for current result
 )
 for k,v in _DEF.items():
     if k not in st.session_state: st.session_state[k]=v
@@ -63,196 +64,203 @@ CTX = "#8890aa" if D else "#6b7280"
 
 # ── CSS ────────────────────────────────────────────────────────────────────
 # Use string concatenation — avoids ALL f-string brace conflicts
-st.markdown("""<style>
+_CSS_RULES = """
 /* ── Reset & Base ── */
 html, body, [class*="css"], [class*="st-"], div, span, p, label,
 input, textarea, select, button, h1, h2, h3, h4, h5, h6, li, a,
-[data-testid], [data-baseweb] {
+[data-testid], [data-baseweb] {{
     font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
-}
-</style>""" +
-"""<style>
+}}
+
+
 /* ── App background ── */
-[data-testid="stAppViewContainer"] { background:"""+BG+""" !important; }
-[data-testid="stSidebar"] { background:"""+SB+""" !important; }
-[data-testid="stHeader"] { background:"""+BG+""" !important; }
-section[data-testid="stSidebar"] > div { background:"""+SB+""" !important; }
+[data-testid="stAppViewContainer"] {{ background:{BG} !important; }}
+[data-testid="stSidebar"] {{ background:{SB} !important; }}
+[data-testid="stHeader"] {{ background:{BG} !important; }}
+section[data-testid="stSidebar"] > div {{ background:{SB} !important; }}
 
 /* ── All text ── */
-body, p, span, div, label, li, td, th, caption {
-    color:"""+TX+""" !important;
-}
-h1 { color:"""+AC+""" !important; font-size:1.4rem !important; font-weight:700 !important; }
-h2, h3, h4 { color:"""+TX+""" !important; }
+body, p, span, div, label, li, td, th, caption {{
+    color:{TX} !important;
+}}
+h1 {{ color:{AC} !important; font-size:1.4rem !important; font-weight:700 !important; }}
+h2, h3, h4 {{ color:{TX} !important; }}
 
 /* ── Sidebar text ── */
-[data-testid="stSidebarContent"] { color:"""+TX+""" !important; }
-[data-testid="stSidebarContent"] * { color:"""+TX+""" !important; }
-[data-testid="stSidebarContent"] h4 { color:"""+AC+""" !important; }
+[data-testid="stSidebarContent"] {{ color:{TX} !important; }}
+[data-testid="stSidebarContent"] * {{ color:{TX} !important; }}
+[data-testid="stSidebarContent"] h4 {{ color:{AC} !important; }}
 
 /* ── Buttons ── */
-.stButton > button {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
-    color:"""+TX+""" !important;
+.stButton > button {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
+    color:{TX} !important;
     border-radius:8px !important;
     transition: all .15s !important;
-}
-.stButton > button:hover {
-    border-color:"""+AC+""" !important;
-    color:"""+AC+""" !important;
-}
-.stButton > button[kind="primary"] {
-    background:"""+AC+""" !important;
-    border-color:"""+AC+""" !important;
+}}
+.stButton > button:hover {{
+    border-color:{AC} !important;
+    color:{AC} !important;
+}}
+.stButton > button[kind="primary"] {{
+    background:{AC} !important;
+    border-color:{AC} !important;
     color:#ffffff !important;
-}
-.stButton > button[kind="primary"]:hover {
+}}
+.stButton > button[kind="primary"]:hover {{
     opacity: 0.9 !important;
     color:#ffffff !important;
-}
+}}
 
 /* ── Inputs ── */
-.stTextInput > div > div > input {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
-    color:"""+TX+""" !important;
+.stTextInput > div > div > input {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
+    color:{TX} !important;
     border-radius:8px !important;
-}
-.stTextInput > div > div > input::placeholder { color:"""+DM+""" !important; }
-.stTextInput > div > div > input:focus { border-color:"""+AC+""" !important; }
-.stNumberInput > div > div > input {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
-    color:"""+TX+""" !important;
-}
+}}
+.stTextInput > div > div > input::placeholder {{ color:{DM} !important; }}
+.stTextInput > div > div > input:focus {{ border-color:{AC} !important; }}
+.stNumberInput > div > div > input {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
+    color:{TX} !important;
+}}
 
 /* ── Selectbox ── */
-.stSelectbox > div > div {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
-    color:"""+TX+""" !important;
+.stSelectbox > div > div {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
+    color:{TX} !important;
     border-radius:8px !important;
-}
-.stSelectbox > div > div > div { color:"""+TX+""" !important; }
-[data-baseweb="select"] > div { background:"""+CD+""" !important; color:"""+TX+""" !important; }
-[data-baseweb="select"] span { color:"""+TX+""" !important; }
-[role="option"] {
-    background:"""+CD+""" !important;
-    color:"""+TX+""" !important;
-}
-[role="option"]:hover { background:"""+BD+""" !important; }
+}}
+.stSelectbox > div > div > div {{ color:{TX} !important; }}
+[data-baseweb="select"] > div {{ background:{CD} !important; color:{TX} !important; }}
+[data-baseweb="select"] span {{ color:{TX} !important; }}
+[role="option"] {{
+    background:{CD} !important;
+    color:{TX} !important;
+}}
+[role="option"]:hover {{ background:{BD} !important; }}
 
 /* ── Sliders ── */
-.stSlider > div { color:"""+TX+""" !important; }
-.stSlider label { color:"""+TX+""" !important; }
-[data-testid="stSlider"] { color:"""+TX+""" !important; }
+.stSlider > div {{ color:{TX} !important; }}
+.stSlider label {{ color:{TX} !important; }}
+[data-testid="stSlider"] {{ color:{TX} !important; }}
 
 /* ── Checkboxes & Radio ── */
-.stCheckbox > label { color:"""+TX+""" !important; }
-.stRadio > div > label { color:"""+TX+""" !important; }
-.stRadio label { color:"""+TX+""" !important; }
+.stCheckbox > label {{ color:{TX} !important; }}
+.stRadio > div > label {{ color:{TX} !important; }}
+.stRadio label {{ color:{TX} !important; }}
 
 /* ── Metrics ── */
-[data-testid="stMetricValue"] { color:"""+TX+""" !important; font-size:1.2rem !important; }
-[data-testid="stMetricLabel"] { color:"""+DM+""" !important; }
-[data-testid="stMetricLabel"] div { color:"""+DM+""" !important; }
-[data-testid="stMetricDelta"] { color:"""+DM+""" !important; }
-[data-testid="stMetric"] { background:"""+CD+"""; border:1px solid """+BD+"""; border-radius:10px; padding:10px; }
+[data-testid="stMetricValue"] {{ color:{TX} !important; font-size:1.2rem !important; }}
+[data-testid="stMetricLabel"] {{ color:{DM} !important; }}
+[data-testid="stMetricLabel"] div {{ color:{DM} !important; }}
+[data-testid="stMetricDelta"] {{ color:{DM} !important; }}
+[data-testid="stMetric"] {{ background:{CD}; border:1px solid {BD}; border-radius:10px; padding:10px; }}
 
 /* ── Expander ── */
-[data-testid="stExpander"] {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
+[data-testid="stExpander"] {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
     border-radius:8px !important;
-}
-[data-testid="stExpander"] summary { color:"""+TX+""" !important; }
-[data-testid="stExpander"] summary p { color:"""+TX+""" !important; }
-[data-testid="stExpander"] p { color:"""+TX+""" !important; }
+}}
+[data-testid="stExpander"] summary {{ color:{TX} !important; }}
+[data-testid="stExpander"] summary p {{ color:{TX} !important; }}
+[data-testid="stExpander"] p {{ color:{TX} !important; }}
 
 /* ── Tabs ── */
-[data-baseweb="tab"] span { color:"""+DM+""" !important; }
-[aria-selected="true"] span { color:"""+AC+""" !important; }
-[data-baseweb="tab-highlight"] { background:"""+AC+""" !important; }
-[data-baseweb="tab-border"] { background:"""+BD+""" !important; }
+[data-baseweb="tab"] span {{ color:{DM} !important; }}
+[aria-selected="true"] span {{ color:{AC} !important; }}
+[data-baseweb="tab-highlight"] {{ background:{AC} !important; }}
+[data-baseweb="tab-border"] {{ background:{BD} !important; }}
 
 /* ── Caption / small text ── */
-[data-testid="stCaptionContainer"] { color:"""+DM+""" !important; }
-[data-testid="stCaptionContainer"] p { color:"""+DM+""" !important; }
-.stCaption { color:"""+DM+""" !important; }
+[data-testid="stCaptionContainer"] {{ color:{DM} !important; }}
+[data-testid="stCaptionContainer"] p {{ color:{DM} !important; }}
+.stCaption {{ color:{DM} !important; }}
 
 /* ── Progress ── */
-[data-testid="stProgressBar"] > div { background:"""+AC+""" !important; }
-[data-testid="stProgressBar"] { background:"""+BD+""" !important; }
+[data-testid="stProgressBar"] > div {{ background:{AC} !important; }}
+[data-testid="stProgressBar"] {{ background:{BD} !important; }}
 
 /* ── Download buttons ── */
-[data-testid="stDownloadButton"] button {
-    background:"""+CD+""" !important;
-    border:1px solid """+BD+""" !important;
-    color:"""+TX+""" !important;
+[data-testid="stDownloadButton"] button {{
+    background:{CD} !important;
+    border:1px solid {BD} !important;
+    color:{TX} !important;
     border-radius:8px !important;
-}
+}}
 
 /* ── Divider ── */
-hr { border-top:1px solid """+BD+""" !important; }
+hr {{ border-top:1px solid {BD} !important; }}
 
 /* ── Custom cards ── */
-.metric-card {
-    background:"""+CD+""";
-    border:1px solid """+BD+""";
+.metric-card {{
+    background:{CD};
+    border:1px solid {BD};
     border-radius:10px;
     padding:12px 16px;
     margin-bottom:8px;
-}
-.metric-card .lbl { color:"""+DM+"""; font-size:.74rem; margin-bottom:2px; }
-.metric-card .val { color:"""+TX+"""; font-size:1.2rem; font-weight:700; }
-.metric-card .sub { color:"""+AC+"""; font-size:.8rem; }
+}}
+.metric-card .lbl {{ color:{DM}; font-size:.74rem; margin-bottom:2px; }}
+.metric-card .val {{ color:{TX}; font-size:1.2rem; font-weight:700; }}
+.metric-card .sub {{ color:{AC}; font-size:.8rem; }}
 
 /* ── Badges ── */
-.bull { background:"""+("rgba(5,150,105,0.12)" if D else "#dcfce7")+"""; color:"""+OK+""";
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }
-.bear { background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:"""+ER+""";
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }
-.neut { background:"""+("rgba(245,158,11,0.12)" if D else "#fef9c3")+"""; color:"""+WA+""";
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }
-.bhi  { background:"""+("rgba(108,142,245,0.12)" if D else "#ede9fe")+"""; color:"""+AC+""";
-    padding:2px 10px; border-radius:20px; display:inline-block; }
-.blo  { background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:"""+ER+""";
-    padding:2px 10px; border-radius:20px; display:inline-block; }
+.bull {{ background:"""+("rgba(5,150,105,0.12)" if D else "#dcfce7")+"""; color:{OK};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
+.bear {{ background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:{ER};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
+.neut {{ background:"""+("rgba(245,158,11,0.12)" if D else "#fef9c3")+"""; color:{WA};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
+.bhi  {{ background:"""+("rgba(108,142,245,0.12)" if D else "#ede9fe")+"""; color:{AC};
+    padding:2px 10px; border-radius:20px; display:inline-block; }}
+.blo  {{ background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:{ER};
+    padding:2px 10px; border-radius:20px; display:inline-block; }}
 
 /* ── News items ── */
-.ni { border-left:3px solid """+BD+"""; padding:5px 10px; margin:5px 0;
-    font-size:.84rem; color:"""+DM+"""; }
-.ni a { color:"""+DM+"""; text-decoration:none; }
-.ni:hover { border-color:"""+AC+"""; }
+.ni {{ border-left:3px solid {BD}; padding:5px 10px; margin:5px 0;
+    font-size:.84rem; color:{DM}; }}
+.ni a {{ color:{DM}; text-decoration:none; }}
+.ni:hover {{ border-color:{AC}; }}
 
 
 /* ── Sidebar full override ── */
-[data-testid="stSidebar"] input, [data-testid="stSidebar"] .stTextInput input { background:"""+CD+""" !important; color:"""+TX+""" !important; }
-[data-testid="stSidebar"] [data-baseweb="select"] > div,[data-testid="stSidebar"] [data-baseweb="select"] span,[data-testid="stSidebar"] [data-baseweb="select"] div{ background:"""+CD+""" !important; color:"""+TX+""" !important; }
-[data-testid="stSidebar"] [role="option"]{ background:"""+CD+""" !important; color:"""+TX+""" !important; }
-[data-testid="stSidebar"] [role="option"]:hover { background:"""+BD+""" !important; }
-[data-baseweb="popover"],[data-baseweb="menu"]{ background:"""+CD+""" !important; }
-[data-baseweb="menu"] li { color:"""+TX+""" !important; background:"""+CD+""" !important; }
-[data-baseweb="menu"] li:hover { background:"""+BD+""" !important; }
+[data-testid="stSidebar"] input, [data-testid="stSidebar"] .stTextInput input {{ background:{CD} !important; color:{TX} !important; }}
+[data-testid="stSidebar"] [data-baseweb="select"] > div,[data-testid="stSidebar"] [data-baseweb="select"] span,[data-testid="stSidebar"] [data-baseweb="select"] div{{ background:{CD} !important; color:{TX} !important; }}
+[data-testid="stSidebar"] [role="option"]{{ background:{CD} !important; color:{TX} !important; }}
+[data-testid="stSidebar"] [role="option"]:hover {{ background:{BD} !important; }}
+[data-baseweb="popover"],[data-baseweb="menu"]{{ background:{CD} !important; }}
+[data-baseweb="menu"] li {{ color:{TX} !important; background:{CD} !important; }}
+[data-baseweb="menu"] li:hover {{ background:{BD} !important; }}
 /* ── Mobile responsive ── */
-@media (max-width: 768px) {
-    h1 { font-size:1.2rem !important; }
-    .metric-card .val { font-size:1rem !important; }
-    [data-testid="stMetricValue"] { font-size:1rem !important; }
+@media (max-width: 768px) {{
+    h1 {{ font-size:1.2rem !important; }}
+    .metric-card .val {{ font-size:1rem !important; }}
+    [data-testid="stMetricValue"] {{ font-size:1rem !important; }}
     /* Prevent page scroll hijack when swiping chart on mobile */
-    .js-plotly-plot { touch-action: pan-x pan-y !important; }
-}
+    .js-plotly-plot {{ touch-action: pan-x pan-y !important; }}
+}}
 
 /* ── Prevent plotly chart from capturing scroll on mobile ── */
-.stPlotlyChart { touch-action: pan-y !important; }
+.stPlotlyChart {{ touch-action: pan-y !important; }}
 
 /* ── Markdown text ── */
-[data-testid="stMarkdownContainer"] p { color:"""+TX+""" !important; }
-[data-testid="stMarkdownContainer"] span { color:"""+TX+""" !important; }
-[data-testid="stMarkdownContainer"] li { color:"""+TX+""" !important; }
-
-</style>""", unsafe_allow_html=True)
+[data-testid="stMarkdownContainer"] p {{ color:{TX} !important; }}
+[data-testid="stMarkdownContainer"] span {{ color:{TX} !important; }}
+[data-testid="stMarkdownContainer"] li {{ color:{TX} !important; }}
+"""
+st.markdown(
+    "<style>" + _CSS_RULES.format(
+        BG=BG, SB=SB, CD=CD, TX=TX, DM=DM, BD=BD,
+        AC=AC, OK=OK, ER=ER, WA=WA,
+        CBG=CBG, CPP=CPP, CGR=CGR, CTX=CTX,
+    ) + "</style>",
+    unsafe_allow_html=True
+)
 
 # ── Mobile chart scroll fix (JavaScript) ─────────────────────────────────
 # Inject JS to prevent chart from hijacking mobile scroll
@@ -522,9 +530,26 @@ def sidebar():
 
         # Analysis params
         with st.expander("⚙ 分析參數",expanded=False):
+            _fd_prev = st.session_state.forecast_days
+            _ly_prev = st.session_state.lookback_years
             st.session_state.forecast_days =st.slider("預測天數",5,90,st.session_state.forecast_days)
             st.session_state.lookback_years=st.slider("回溯年數",1,10,st.session_state.lookback_years)
             st.session_state.train_ratio   =st.slider("ML訓練佔比",.5,.95,st.session_state.train_ratio,.05)
+            _params_changed = (
+                st.session_state.forecast_days != _fd_prev or
+                st.session_state.lookback_years != _ly_prev
+            )
+            if _params_changed and st.session_state.result is not None:
+                st.caption("📌 參數已變更，點下方按鈕重新分析")
+            if _params_changed or st.button("🔄 重新分析（套用新參數）",
+                                             use_container_width=True,
+                                             disabled=(st.session_state.result is None and
+                                                       not st.session_state.get("si",""))):
+                if st.session_state.result:
+                    _sym = st.session_state.result.get("symbol","").split(".")[0]
+                    if _sym:
+                        st.session_state._trigger = True
+                        st.session_state.si = _sym
 
         # Weight settings
         with st.expander("⚖ 分析權重",expanded=False):
