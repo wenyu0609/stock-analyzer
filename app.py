@@ -66,283 +66,232 @@ CTX = "#8890aa" if D else "#6b7280"
 # ── CSS ────────────────────────────────────────────────────────────────────
 # Use string concatenation — avoids ALL f-string brace conflicts
 _CSS_RULES = """
-/* ── Load Material Icons to fix expander arrow rendering ── */
-@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
-@import url('https://fonts.googleapis.com/icon?family=Material+Icons+Round');
-@import url('https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded');
+/* ================================================================
+   EXPANDER ICON FIX
+   Streamlit expander summary structure:
+   <summary>
+     <span class="st-emotion-cache-XXX">  <- THIS is the icon span
+       keyboard_double_arrow_right         <- ligature text
+     </span>
+     <p>Label text</p>                     <- this is the label
+   </summary>
+   
+   Problem: our `span {{ font-family: CJK }}` overrides the icon span's
+   Material Icons font, breaking the ligature -> raw text shows.
+   
+   Fix: hide the icon span entirely via details>summary>span:first-child
+   AND protect icon spans from our font override.
+================================================================ */
 
-/* ── Fallback: if Material Icons fail, hide the raw ligature text ── */
-[data-testid="stExpander"] summary svg {{
-    display: inline-block !important;
+/* Step 1: Hide the broken icon span completely */
+details summary span:first-child,
+details summary > span:first-of-type {{
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    position: absolute !important;
+}}
+/* Also hide via data-testid if available */
+[data-testid="stExpander"] summary > span:first-child,
+[data-testid="stExpander"] summary > div:first-child > span:first-child {{
+    display: none !important;
+    visibility: hidden !important;
+}}
+/* Add a CSS triangle instead */
+details summary::before {{
+    content: "▶ " !important;
+    font-family: sans-serif !important;
+    color: {AC} !important;
+    font-size: 11px !important;
+    display: inline !important;
     visibility: visible !important;
 }}
-/* Hide the icon span text that shows as "keyboard_double_arrow_right" */
-[data-testid="stExpander"] summary [data-testid="stExpanderToggleIcon"] {{
-    font-family: 'Material Icons', 'Material Icons Round', 'Material Symbols Rounded' !important;
-    font-size: 18px !important;
-    font-feature-settings: 'liga' 1 !important;
-    -webkit-font-feature-settings: 'liga' 1 !important;
-}}
-/* Nuclear option: if font still fails, hide the icon entirely */
-@supports not (font-family: 'Material Icons') {{
-    [data-testid="stExpander"] summary [data-testid="stExpanderToggleIcon"] {{
-        visibility: hidden !important;
-        width: 0 !important;
-    }}
+details[open] summary::before {{
+    content: "▼ " !important;
 }}
 
-/* ── Reset & Base ── */
-html, body, p, label,
-input, textarea, select, button, h1, h2, h3, h4, h5, h6, li, a {{
-    font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
-}}
-/* Apply CJK font to div and span BUT NOT icon spans */
-div:not([class*="material"]) {{
-    font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
-}}
-span:not([data-testid="stExpanderToggleIcon"]):not(.material-icons):not(.material-symbols-rounded):not([class*="material"]) {{
-    font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
-}}
-/* But Material Icons spans must NOT use CJK font (breaks ligatures) */
-.material-icons, .material-icons-round, .material-symbols-rounded,
-[class*="material-icon"], [class*="material-symbol"] {{
-    font-family: 'Material Icons', 'Material Icons Round', 'Material Symbols Rounded' !important;
-}}
-
-
-/* ── App background ── */
+/* Step 2: App background */
 [data-testid="stAppViewContainer"] {{ background:{BG} !important; }}
 [data-testid="stSidebar"] {{ background:{SB} !important; }}
 [data-testid="stHeader"] {{ background:{BG} !important; }}
 section[data-testid="stSidebar"] > div {{ background:{SB} !important; }}
 
-/* ── All text ── */
-/* Note: NOT targeting 'span' globally to avoid breaking Material Icons ligatures */
-body, p, div:not([class*="material"]):not([data-testid="stExpanderToggleIcon"]),
-label, li, td, th, caption {{
-    color:{TX} !important;
+/* Step 3: Typography - CRITICAL: do NOT apply to icon spans */
+html, body, p, label, input, textarea, select,
+button, h1, h2, h3, h4, h5, h6, li, a, td, th, caption {{
+    font-family: 'Microsoft JhengHei','PingFang TC','Noto Sans TC',sans-serif !important;
 }}
-/* Explicit span override that excludes icon spans */
-span:not([data-testid="stExpanderToggleIcon"]):not(.material-icons):not(.material-symbols-rounded) {{
-    color:{TX} !important;
+/* Only apply CJK font to divs/spans that are NOT icon containers */
+div:not([class*="material"]) {{
+    font-family: 'Microsoft JhengHei','PingFang TC','Noto Sans TC',sans-serif !important;
 }}
-h1 {{ color:{AC} !important; font-size:1.4rem !important; font-weight:700 !important; }}
-h2, h3, h4 {{ color:{TX} !important; }}
+/* Explicitly exclude icon spans from any font override */
+details summary > span,
+details summary > div > span {{
+    font-family: 'Material Icons','Material Icons Round','Material Symbols Rounded',sans-serif !important;
+}}
 
-/* ── Sidebar text ── */
-[data-testid="stSidebarContent"] {{ color:{TX} !important; }}
-[data-testid="stSidebarContent"] * {{ color:{TX} !important; }}
-[data-testid="stSidebarContent"] h4 {{ color:{AC} !important; }}
+/* Step 4: All text colours */
+body, p, div, label, li, td, th, caption, h2, h3, h4 {{
+    color: {TX} !important;
+}}
+span {{ color: {TX} !important; }}
+h1 {{ color: {AC} !important; font-size:1.45rem !important; font-weight:700 !important; }}
+[data-testid="stSidebarContent"] * {{ color: {TX} !important; }}
+[data-testid="stSidebarContent"] h4 {{ color: {AC} !important; }}
 
-/* ── Buttons ── */
+/* Step 5: Buttons */
 .stButton > button {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    color:{TX} !important;
-    border-radius:8px !important;
-    transition: all .15s !important;
+    background:{CD} !important; border:1px solid {BD} !important;
+    color:{TX} !important; border-radius:8px !important; transition:all .15s !important;
 }}
-.stButton > button:hover {{
-    border-color:{AC} !important;
-    color:{AC} !important;
-}}
+.stButton > button:hover {{ border-color:{AC} !important; color:{AC} !important; }}
 .stButton > button[kind="primary"] {{
-    background:{AC} !important;
-    border-color:{AC} !important;
-    color:#ffffff !important;
+    background:{AC} !important; border-color:{AC} !important; color:#fff !important;
 }}
-.stButton > button[kind="primary"]:hover {{
-    opacity: 0.9 !important;
-    color:#ffffff !important;
-}}
+.stButton > button[kind="primary"]:hover {{ opacity:.9 !important; }}
 
-/* ── Inputs ── */
-.stTextInput > div > div > input {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    color:{TX} !important;
-    border-radius:8px !important;
+/* Step 6: Inputs */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input {{
+    background:{CD} !important; border:1px solid {BD} !important;
+    color:{TX} !important; border-radius:8px !important;
 }}
 .stTextInput > div > div > input::placeholder {{ color:{DM} !important; }}
-.stTextInput > div > div > input:focus {{ border-color:{AC} !important; }}
-.stNumberInput > div > div > input {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    color:{TX} !important;
-}}
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {{ border-color:{AC} !important; }}
 
-/* ── Selectbox ── */
+/* Step 7: Selectbox */
 .stSelectbox > div > div {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    color:{TX} !important;
-    border-radius:8px !important;
+    background:{CD} !important; border:1px solid {BD} !important;
+    color:{TX} !important; border-radius:8px !important;
 }}
-.stSelectbox > div > div > div {{ color:{TX} !important; }}
 [data-baseweb="select"] > div {{ background:{CD} !important; color:{TX} !important; }}
 [data-baseweb="select"] span {{ color:{TX} !important; }}
-[role="option"] {{
-    background:{CD} !important;
-    color:{TX} !important;
-}}
+[role="option"] {{ background:{CD} !important; color:{TX} !important; }}
 [role="option"]:hover {{ background:{BD} !important; }}
+[data-baseweb="popover"],[data-baseweb="menu"] {{ background:{CD} !important; }}
+[data-baseweb="menu"] li {{ color:{TX} !important; background:{CD} !important; }}
+[data-baseweb="menu"] li:hover {{ background:{BD} !important; }}
 
-/* ── Sliders ── */
-.stSlider > div {{ color:{TX} !important; }}
-.stSlider label {{ color:{TX} !important; }}
-[data-testid="stSlider"] {{ color:{TX} !important; }}
+/* Step 8: Sliders, Checkboxes, Radio */
+.stSlider label, .stSlider > div {{ color:{TX} !important; }}
+.stCheckbox > label, .stCheckbox label {{ color:{TX} !important; }}
+.stRadio > div > label, .stRadio label {{ color:{TX} !important; }}
 
-/* ── Checkboxes & Radio ── */
-.stCheckbox > label {{ color:{TX} !important; }}
-.stRadio > div > label {{ color:{TX} !important; }}
-.stRadio label {{ color:{TX} !important; }}
-
-/* ── Metrics ── */
+/* Step 9: Metrics */
 [data-testid="stMetricValue"] {{ color:{TX} !important; font-size:1.2rem !important; }}
-[data-testid="stMetricLabel"] {{ color:{DM} !important; }}
-[data-testid="stMetricLabel"] div {{ color:{DM} !important; }}
+[data-testid="stMetricLabel"], [data-testid="stMetricLabel"] div {{ color:{DM} !important; }}
 [data-testid="stMetricDelta"] {{ color:{DM} !important; }}
-[data-testid="stMetric"] {{ background:{CD}; border:1px solid {BD}; border-radius:10px; padding:10px; }}
+[data-testid="stMetric"] {{
+    background:{CD}; border:1px solid {BD}; border-radius:10px; padding:10px;
+}}
 
-/* ── Expander ── */
+/* Step 10: Expander content */
 [data-testid="stExpander"] {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    border-radius:8px !important;
+    background:{CD} !important; border:1px solid {BD} !important; border-radius:8px !important;
 }}
-[data-testid="stExpander"] summary {{ color:{TX} !important; background:{CD} !important; }}
-[data-testid="stExpander"] summary p,
-[data-testid="stExpander"] summary svg {{ color:{TX} !important; fill:{TX} !important; }}
-/* Hide broken Material Icon text (shows as "keyboard_double_arrow_right" when font fails) */
-[data-testid="stExpander"] summary span[data-testid="stExpanderToggleIcon"] {{
-    font-family: 'Material Icons', 'Material Icons Round', sans-serif !important;
-    font-size: 0px !important;
-    line-height: 0 !important;
-    overflow: hidden !important;
-    width: 20px !important;
-    display: inline-block !important;
+[data-testid="stExpander"] summary {{
+    color:{TX} !important; background:{CD} !important;
 }}
-[data-testid="stExpander"] summary span[data-testid="stExpanderToggleIcon"]::before {{
-    content: "▶" !important;
-    font-size: 12px !important;
-    color: {TX} !important;
-    font-family: sans-serif !important;
-}}
-[data-testid="stExpander"][data-expanded="true"] summary span[data-testid="stExpanderToggleIcon"]::before {{
-    content: "▼" !important;
-}}
-[data-testid="stExpander"] > div,
+[data-testid="stExpander"] summary p {{ color:{TX} !important; }}
+[data-testid="stExpander"] > div {{ background:{CD} !important; }}
 [data-testid="stExpander"] > div > div {{ background:{CD} !important; }}
+[data-testid="stExpander"] label {{ color:{TX} !important; }}
+[data-testid="stExpander"] span {{ color:{TX} !important; }}
 [data-testid="stExpander"] p {{ color:{TX} !important; }}
-[data-testid="stExpander"] label {{ color:{TX} !important; }}
-[data-testid="stExpander"] span {{ color:{TX} !important; }}
-[data-testid="stExpander"] .stCheckbox > label {{ color:{TX} !important; }}
-[data-testid="stExpander"] .stRadio label {{ color:{TX} !important; }}
-[data-testid="stExpander"] .stSlider label {{ color:{TX} !important; }}
-[data-testid="stExpander"] > div > div {{ background:{CD} !important; }}
-[data-testid="stExpander"] input {{ background:{BG} !important; color:{TX} !important; }}
-[data-testid="stExpander"] span {{ color:{TX} !important; }}
-[data-testid="stExpander"] label {{ color:{TX} !important; }}
 [data-testid="stExpander"] .stCheckbox label {{ color:{TX} !important; }}
 [data-testid="stExpander"] .stRadio label {{ color:{TX} !important; }}
 [data-testid="stExpander"] .stSlider label {{ color:{TX} !important; }}
-[data-testid="stExpander"] .stCaption {{ color:{DM} !important; }}
-[data-testid="stExpander"] [data-testid="stCaptionContainer"] p {{ color:{DM} !important; }}
-[data-testid="stExpander"] input {{ background:{BG} !important; color:{TX} !important; border-color:{BD} !important; }}
-[data-testid="stExpander"] [data-baseweb="select"] > div {{ background:{BG} !important; color:{TX} !important; }}
-[data-testid="stExpander"] [data-baseweb="select"] span {{ color:{TX} !important; }}
+[data-testid="stExpander"] input {{ background:{BG} !important; color:{TX} !important; }}
+[data-testid="stCaptionContainer"] p {{ color:{DM} !important; }}
+[data-testid="stCaptionContainer"] {{ color:{DM} !important; }}
 
-/* ── Tabs ── */
+/* Step 11: Tabs */
 [data-baseweb="tab"] span {{ color:{DM} !important; }}
 [aria-selected="true"] span {{ color:{AC} !important; }}
 [data-baseweb="tab-highlight"] {{ background:{AC} !important; }}
 [data-baseweb="tab-border"] {{ background:{BD} !important; }}
 
-/* ── Caption / small text ── */
-[data-testid="stCaptionContainer"] {{ color:{DM} !important; }}
-[data-testid="stCaptionContainer"] p {{ color:{DM} !important; }}
-.stCaption {{ color:{DM} !important; }}
-
-/* ── Progress ── */
+/* Step 12: Progress, Download, Divider */
 [data-testid="stProgressBar"] > div {{ background:{AC} !important; }}
 [data-testid="stProgressBar"] {{ background:{BD} !important; }}
-
-/* ── Download buttons ── */
 [data-testid="stDownloadButton"] button {{
-    background:{CD} !important;
-    border:1px solid {BD} !important;
-    color:{TX} !important;
-    border-radius:8px !important;
+    background:{CD} !important; border:1px solid {BD} !important;
+    color:{TX} !important; border-radius:8px !important;
 }}
-
-/* ── Divider ── */
 hr {{ border-top:1px solid {BD} !important; }}
 
-/* ── Custom cards ── */
+/* Step 13: Custom cards & badges */
 .metric-card {{
-    background:{CD};
-    border:1px solid {BD};
-    border-radius:10px;
-    padding:12px 16px;
-    margin-bottom:8px;
+    background:{CD}; border:1px solid {BD};
+    border-radius:10px; padding:12px 16px; margin-bottom:8px;
 }}
 .metric-card .lbl {{ color:{DM}; font-size:.74rem; margin-bottom:2px; }}
 .metric-card .val {{ color:{TX}; font-size:1.2rem; font-weight:700; }}
 .metric-card .sub {{ color:{AC}; font-size:.8rem; }}
-
-/* ── Badges ── */
-.bull {{ background:"""+("rgba(5,150,105,0.12)" if D else "#dcfce7")+"""; color:{OK};
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
-.bear {{ background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:{ER};
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
-.neut {{ background:"""+("rgba(245,158,11,0.12)" if D else "#fef9c3")+"""; color:{WA};
-    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block; }}
-.bhi  {{ background:"""+("rgba(108,142,245,0.12)" if D else "#ede9fe")+"""; color:{AC};
-    padding:2px 10px; border-radius:20px; display:inline-block; }}
-.blo  {{ background:"""+("rgba(239,68,68,0.12)" if D else "#fee2e2")+"""; color:{ER};
-    padding:2px 10px; border-radius:20px; display:inline-block; }}
-
-/* ── News items ── */
-.ni {{ border-left:3px solid {BD}; padding:5px 10px; margin:5px 0;
-    font-size:.84rem; color:{DM}; }}
+.bull {{
+    background:{BULL_BG}; color:{OK};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block;
+}}
+.bear {{
+    background:{BEAR_BG}; color:{ER};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block;
+}}
+.neut {{
+    background:{NEUT_BG}; color:{WA};
+    padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block;
+}}
+.bhi {{
+    background:{BHI_BG}; color:{AC};
+    padding:2px 10px; border-radius:20px; display:inline-block;
+}}
+.blo {{
+    background:{BEAR_BG}; color:{ER};
+    padding:2px 10px; border-radius:20px; display:inline-block;
+}}
+.ni {{ border-left:3px solid {BD}; padding:5px 10px; margin:5px 0; font-size:.84rem; color:{DM}; }}
 .ni a {{ color:{DM}; text-decoration:none; }}
 .ni:hover {{ border-color:{AC}; }}
 
-
-/* ── Sidebar full override ── */
-[data-testid="stSidebar"] input, [data-testid="stSidebar"] .stTextInput input {{ background:{CD} !important; color:{TX} !important; }}
-[data-testid="stSidebar"] [data-baseweb="select"] > div,[data-testid="stSidebar"] [data-baseweb="select"] span,[data-testid="stSidebar"] [data-baseweb="select"] div{{ background:{CD} !important; color:{TX} !important; }}
-[data-testid="stSidebar"] [role="option"]{{ background:{CD} !important; color:{TX} !important; }}
-[data-testid="stSidebar"] [role="option"]:hover {{ background:{BD} !important; }}
-[data-baseweb="popover"],[data-baseweb="menu"]{{ background:{CD} !important; }}
-[data-baseweb="menu"] li {{ color:{TX} !important; background:{CD} !important; }}
-[data-baseweb="menu"] li:hover {{ background:{BD} !important; }}
-
-/* Extra safety: any span inside expander summary that has icon text */
-[data-testid="stExpander"] summary > div > span:first-child {{
-    font-size: 0 !important;
-    line-height: 0 !important;
-    overflow: hidden !important;
-    max-width: 0 !important;
-    display: none !important;
+/* Step 14: Sidebar dropdown complete override */
+[data-testid="stSidebar"] [data-testid="stExpander"] {{
+    background:{CD} !important; border-color:{BD} !important;
 }}
-/* ── Mobile responsive ── */
-@media (max-width: 768px) {{
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+    background:{CD} !important; color:{TX} !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] > div {{
+    background:{CD} !important;
+}}
+[data-testid="stSidebar"] [data-testid="stExpander"] label,
+[data-testid="stSidebar"] [data-testid="stExpander"] span,
+[data-testid="stSidebar"] [data-testid="stExpander"] p {{
+    color:{TX} !important;
+}}
+[data-testid="stSidebar"] input {{
+    background:{CD} !important; color:{TX} !important; border-color:{BD} !important;
+}}
+[data-testid="stSidebar"] [data-baseweb="select"] > div {{
+    background:{CD} !important; color:{TX} !important;
+}}
+[data-testid="stSidebar"] [data-baseweb="select"] span {{ color:{TX} !important; }}
+[data-testid="stSidebar"] [role="option"] {{
+    background:{CD} !important; color:{TX} !important;
+}}
+
+/* Step 15: Mobile */
+@media (max-width:768px) {{
     h1 {{ font-size:1.2rem !important; }}
     .metric-card .val {{ font-size:1rem !important; }}
     [data-testid="stMetricValue"] {{ font-size:1rem !important; }}
-    /* Prevent page scroll hijack when swiping chart on mobile */
+    .stPlotlyChart {{ touch-action: pan-y !important; }}
     .js-plotly-plot {{ touch-action: pan-x pan-y !important; }}
 }}
-
-/* ── Prevent plotly chart from capturing scroll on mobile ── */
-.stPlotlyChart {{ touch-action: pan-y !important; }}
-
-/* ── Markdown text ── */
-[data-testid="stMarkdownContainer"] p {{ color:{TX} !important; }}
-[data-testid="stMarkdownContainer"] span {{ color:{TX} !important; }}
-[data-testid="stMarkdownContainer"] li {{ color:{TX} !important; }}
 """
+
 # Inject Material Icons font directly in HTML (more reliable than @import in some environments)
 st.markdown("""
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
@@ -350,11 +299,18 @@ st.markdown("""
 <link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
 """, unsafe_allow_html=True)
 
+# Compute badge backgrounds once
+BULL_BG = "rgba(5,150,105,0.12)"  if D else "#dcfce7"
+BEAR_BG = "rgba(239,68,68,0.12)"  if D else "#fee2e2"
+NEUT_BG = "rgba(245,158,11,0.12)" if D else "#fef9c3"
+BHI_BG  = "rgba(108,142,245,0.12)"if D else "#ede9fe"
+
 st.markdown(
     "<style>" + _CSS_RULES.format(
         BG=BG, SB=SB, CD=CD, TX=TX, DM=DM, BD=BD,
         AC=AC, OK=OK, ER=ER, WA=WA,
         CBG=CBG, CPP=CPP, CGR=CGR, CTX=CTX,
+        BULL_BG=BULL_BG, BEAR_BG=BEAR_BG, NEUT_BG=NEUT_BG, BHI_BG=BHI_BG,
     ) + "</style>",
     unsafe_allow_html=True
 )
