@@ -66,11 +66,47 @@ CTX = "#8890aa" if D else "#6b7280"
 # ── CSS ────────────────────────────────────────────────────────────────────
 # Use string concatenation — avoids ALL f-string brace conflicts
 _CSS_RULES = """
+/* ── Load Material Icons to fix expander arrow rendering ── */
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons+Round');
+@import url('https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded');
+
+/* ── Fallback: if Material Icons fail, hide the raw ligature text ── */
+[data-testid="stExpander"] summary svg {{
+    display: inline-block !important;
+    visibility: visible !important;
+}}
+/* Hide the icon span text that shows as "keyboard_double_arrow_right" */
+[data-testid="stExpander"] summary [data-testid="stExpanderToggleIcon"] {{
+    font-family: 'Material Icons', 'Material Icons Round', 'Material Symbols Rounded' !important;
+    font-size: 18px !important;
+    font-feature-settings: 'liga' 1 !important;
+    -webkit-font-feature-settings: 'liga' 1 !important;
+}}
+/* Nuclear option: if font still fails, hide the icon entirely */
+@supports not (font-family: 'Material Icons') {{
+    [data-testid="stExpander"] summary [data-testid="stExpanderToggleIcon"] {{
+        visibility: hidden !important;
+        width: 0 !important;
+    }}
+}}
+
 /* ── Reset & Base ── */
-html, body, [class*="css"], [class*="st-"], div, span, p, label,
-input, textarea, select, button, h1, h2, h3, h4, h5, h6, li, a,
-[data-testid], [data-baseweb] {{
+html, body, p, label,
+input, textarea, select, button, h1, h2, h3, h4, h5, h6, li, a {{
     font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
+}}
+/* Apply CJK font to div and span BUT NOT icon spans */
+div:not([class*="material"]) {{
+    font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
+}}
+span:not([data-testid="stExpanderToggleIcon"]):not(.material-icons):not(.material-symbols-rounded):not([class*="material"]) {{
+    font-family: 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif !important;
+}}
+/* But Material Icons spans must NOT use CJK font (breaks ligatures) */
+.material-icons, .material-icons-round, .material-symbols-rounded,
+[class*="material-icon"], [class*="material-symbol"] {{
+    font-family: 'Material Icons', 'Material Icons Round', 'Material Symbols Rounded' !important;
 }}
 
 
@@ -81,7 +117,13 @@ input, textarea, select, button, h1, h2, h3, h4, h5, h6, li, a,
 section[data-testid="stSidebar"] > div {{ background:{SB} !important; }}
 
 /* ── All text ── */
-body, p, span, div, label, li, td, th, caption {{
+/* Note: NOT targeting 'span' globally to avoid breaking Material Icons ligatures */
+body, p, div:not([class*="material"]):not([data-testid="stExpanderToggleIcon"]),
+label, li, td, th, caption {{
+    color:{TX} !important;
+}}
+/* Explicit span override that excludes icon spans */
+span:not([data-testid="stExpanderToggleIcon"]):not(.material-icons):not(.material-symbols-rounded) {{
     color:{TX} !important;
 }}
 h1 {{ color:{AC} !important; font-size:1.4rem !important; font-weight:700 !important; }}
@@ -170,8 +212,25 @@ h2, h3, h4 {{ color:{TX} !important; }}
 }}
 [data-testid="stExpander"] summary {{ color:{TX} !important; background:{CD} !important; }}
 [data-testid="stExpander"] summary p,
-[data-testid="stExpander"] summary span,
 [data-testid="stExpander"] summary svg {{ color:{TX} !important; fill:{TX} !important; }}
+/* Hide broken Material Icon text (shows as "keyboard_double_arrow_right" when font fails) */
+[data-testid="stExpander"] summary span[data-testid="stExpanderToggleIcon"] {{
+    font-family: 'Material Icons', 'Material Icons Round', sans-serif !important;
+    font-size: 0px !important;
+    line-height: 0 !important;
+    overflow: hidden !important;
+    width: 20px !important;
+    display: inline-block !important;
+}}
+[data-testid="stExpander"] summary span[data-testid="stExpanderToggleIcon"]::before {{
+    content: "▶" !important;
+    font-size: 12px !important;
+    color: {TX} !important;
+    font-family: sans-serif !important;
+}}
+[data-testid="stExpander"][data-expanded="true"] summary span[data-testid="stExpanderToggleIcon"]::before {{
+    content: "▼" !important;
+}}
 [data-testid="stExpander"] > div,
 [data-testid="stExpander"] > div > div {{ background:{CD} !important; }}
 [data-testid="stExpander"] p {{ color:{TX} !important; }}
@@ -258,6 +317,15 @@ hr {{ border-top:1px solid {BD} !important; }}
 [data-baseweb="popover"],[data-baseweb="menu"]{{ background:{CD} !important; }}
 [data-baseweb="menu"] li {{ color:{TX} !important; background:{CD} !important; }}
 [data-baseweb="menu"] li:hover {{ background:{BD} !important; }}
+
+/* Extra safety: any span inside expander summary that has icon text */
+[data-testid="stExpander"] summary > div > span:first-child {{
+    font-size: 0 !important;
+    line-height: 0 !important;
+    overflow: hidden !important;
+    max-width: 0 !important;
+    display: none !important;
+}}
 /* ── Mobile responsive ── */
 @media (max-width: 768px) {{
     h1 {{ font-size:1.2rem !important; }}
@@ -275,6 +343,13 @@ hr {{ border-top:1px solid {BD} !important; }}
 [data-testid="stMarkdownContainer"] span {{ color:{TX} !important; }}
 [data-testid="stMarkdownContainer"] li {{ color:{TX} !important; }}
 """
+# Inject Material Icons font directly in HTML (more reliable than @import in some environments)
+st.markdown("""
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+""", unsafe_allow_html=True)
+
 st.markdown(
     "<style>" + _CSS_RULES.format(
         BG=BG, SB=SB, CD=CD, TX=TX, DM=DM, BD=BD,
@@ -476,10 +551,11 @@ def render_subchart_popout(r, chart_type="MACD"):
         font=dict(color=CTX,size=11),
         legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(size=10,color=CTX)),
         margin=dict(l=0,r=0,t=40,b=0),hovermode="x unified",
+        dragmode="pan",
         xaxis=dict(gridcolor=CGR),yaxis=dict(gridcolor=CGR),
         title=dict(text=title,font=dict(color=TX,size=13)))
     st.plotly_chart(fig,use_container_width=True,
-        config={"displaylogo":False,"scrollZoom":True,
+        config={"displaylogo":False,"scrollZoom":True,"dragmode":"pan",
                 "modeBarButtonsToRemove":["autoScale2d","lasso2d","select2d"]})
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
