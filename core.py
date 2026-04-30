@@ -90,6 +90,8 @@ def friendly_error_message(exc: Exception) -> str:
 
 _ANALYSIS_CACHE = {}
 _ANALYSIS_CACHE_TTL = 900  # 15 minutes
+_TOP_VOLUME_CACHE = {}
+_TOP_VOLUME_CACHE_TTL = 1800  # 30 minutes
 
 def _safe_float(v, default=0.0):
     try:
@@ -963,6 +965,12 @@ def get_top_volume_stocks(limit: int = 100) -> list:
     """Return top Taiwan volume stocks from TWSE + TPEX, fallback to common list."""
     fallback = ["2330","2317","2454","2303","2881","2882","2891","2886","0050","00631L",
                 "2603","2615","2382","3231","2379","3037","2308","3661","3711","3443"]
+    cache_key = f"topvol:{limit}"
+    now = time.time()
+    if cache_key in _TOP_VOLUME_CACHE:
+        ts, cached = _TOP_VOLUME_CACHE[cache_key]
+        if now - ts < _TOP_VOLUME_CACHE_TTL:
+            return cached[:limit]
     if not REQUESTS_OK: return fallback[:limit]
     parsed = []
 
@@ -1004,7 +1012,9 @@ def get_top_volume_stocks(limit: int = 100) -> list:
         if c not in seen:
             codes.append(c); seen.add(c)
         if len(codes) >= limit: break
-    return codes or fallback[:limit]
+    result = codes or fallback[:limit]
+    _TOP_VOLUME_CACHE[cache_key] = (time.time(), result)
+    return result[:limit]
 
 def recommendation_score(r: dict) -> float:
     df = r["df"]; ind = r["indicators"]; fc = r["forecast"]
@@ -1027,17 +1037,72 @@ def recommendation_score(r: dict) -> float:
         us * 0.25
     )
 
+def _quick_recommend_candidate(code: str, lookback_years: int, forecast_days: int) -> Optional[dict]:
+    """
+    Fast first-stage scan for recommendations.
+    It still analyzes every top-volume stock, but avoids the expensive per-stock
+    news/fundamental/ML/API-heavy calls until finalists are selected.
+    """
+    try:
+        sym, name, df = resolve_and_fetch(code, lookback_years)
+        ind = compute_indicators(df)
+        sr = compute_support_resistance(df)
+        diag = macd_rsi_diagnosis(df, ind)
+        drift = float(np.clip(diag.get("score", 0.0), -1, 1)) * 0.0015
+        fc = simple_forecast(df, days=forecast_days, n_paths=80, drift_bias=drift)
+        last = float(df["Close"].iloc[-1])
+        med = float(fc["median"][-1])
+        fc_pct = (med - last) / max(last, 1e-9)
+        vol_ratio = float(df["Volume"].iloc[-1]) / max(float(ind["vol_ma20"].iloc[-1]), 1.0)
+        # First-stage score: trend + forecast + liquidity confirmation.
+        score = fc_pct * 3.0 + diag.get("score", 0.0) * 1.1 + np.clip((vol_ratio - 1.0) / 2.0, -0.4, 0.6)
+        return {
+            "code": sym.split(".")[0], "name": name, "quick_score": float(score),
+            "last": last, "forecast_pct": fc_pct * 100,
+            "diagnosis": diag.get("label", "中性"),
+        }
+    except Exception:
+        return None
+
+
 def recommend_top_volume_stocks(volume_limit: int = 100, top_n: int = 5,
                                 lookback_years: int = 2, forecast_days: int = 20,
-                                weights: dict = None, progress_callback=None) -> list:
+                                weights: dict = None, progress_callback=None,
+                                fast_mode: bool = True,
+                                finalist_count: int = 18) -> list:
     """
     Analyze top-volume Taiwan stocks and return recommended candidates.
-    This intentionally scans ALL top `volume_limit` symbols, not just watchlist.
+
+    Speed strategy:
+      1) scan ALL top-volume stocks with a lightweight technical/forecast pass;
+      2) run full analysis only on the best finalists.
+    This preserves the requirement of checking all top-volume stocks while avoiding
+    100 full Yahoo/TWSE/news/model passes every time.
     """
     weights = {**DEFAULT_WEIGHTS, **(weights or {})}
     codes = get_top_volume_stocks(volume_limit)
-    rows = []
     total = len(codes)
+
+    if fast_mode:
+        quick_rows = []
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(_quick_recommend_candidate, c, max(1, lookback_years), forecast_days): c for c in codes}
+            done = 0
+            for fut in as_completed(futs):
+                done += 1
+                if progress_callback:
+                    progress_callback(done, total, f"快速掃描前 {volume_limit} 大成交量：{futs[fut]}")
+                item = fut.result()
+                if item is not None:
+                    quick_rows.append(item)
+        quick_rows.sort(key=lambda x: x["quick_score"], reverse=True)
+        finalists = [x["code"] for x in quick_rows[:max(top_n, finalist_count)]]
+    else:
+        finalists = codes
+
+    rows = []
+    final_total = len(finalists)
+
     def _one(code):
         try:
             r = run_analysis(code, lookback_years=lookback_years,
@@ -1054,6 +1119,8 @@ def recommend_top_volume_stocks(volume_limit: int = 100, top_n: int = 5,
                 reason.append(f"ML上漲機率{r['ml_predict']['prob_up']*100:.0f}%")
             if r.get("institutional", {}).get("total_net", 0) > 0:
                 reason.append("三大法人買超")
+            if r.get("margin", {}).get("margin_score", 0) > 0.15:
+                reason.append("融資融券偏正面")
             if r.get("news_sentiment", {}).get("label") == "正面":
                 reason.append("新聞情緒正面")
             if med > last:
@@ -1067,17 +1134,16 @@ def recommend_top_volume_stocks(volume_limit: int = 100, top_n: int = 5,
                 "diagnosis": diag.get("label", "中性"),
                 "reason": "、".join(reason) if reason else "綜合分數較高",
             }
-        except Exception as e:
+        except Exception:
             return None
 
-    # Conservative workers to reduce Yahoo rate-limit. This still checks all candidates.
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(_one, c): c for c in codes}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {ex.submit(_one, c): c for c in finalists}
         done = 0
         for fut in as_completed(futs):
             done += 1
             if progress_callback:
-                progress_callback(done, total, f"掃描前 {volume_limit} 大成交量：{futs[fut]}")
+                progress_callback(done, final_total, f"完整分析候選股：{futs[fut]}")
             item = fut.result()
             if item is not None:
                 rows.append(item)

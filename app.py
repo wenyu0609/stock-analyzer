@@ -21,6 +21,7 @@ try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table as RLTable, TableStyle, Image as RLImage
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     REPORTLAB_OK = True
 except Exception:
     REPORTLAB_OK = False
@@ -53,7 +54,7 @@ _DEF = dict(
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
     show_macd=True, show_rsi=True,
     show_ma5=True, show_ma20=True, show_ma60=True,
-    chart_dragmode="zoom", mobile_chart_mode=True,
+    chart_dragmode="pan", mobile_chart_mode=True,
     _show_reco=False,
     theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
     _last_params={},  # tracks params used for current result
@@ -643,10 +644,10 @@ def sidebar():
                 "啟用圖表手勢模式（雙指縮放、單指框選/拖曳）",
                 st.session_state.mobile_chart_mode, key="_mobile_zoom")
             st.session_state.chart_dragmode = st.radio(
-                "主圖預設手勢", ["zoom","pan"],
-                index=0 if st.session_state.chart_dragmode=="zoom" else 1,
+                "主圖預設手勢", ["pan","zoom"],
+                index=0 if st.session_state.chart_dragmode=="pan" else 1,
                 horizontal=True, key="_dragmode",
-                help="zoom：手機較好放大；pan：手機較好拖動。右上角工具列也可切換。")
+                help="pan：預設拖動畫面；zoom：可框選放大。右上角工具列也可切換。手機雙指仍可縮放。")
 
         with st.expander("分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
@@ -1034,18 +1035,32 @@ def generate_pdf_bytes(analysis: dict, chart_png_bytes=None) -> bytes:
 _pdf_cjk_font_registered = False
 
 def _register_pdf_cjk_font() -> str:
+    """
+    Register a CJK-capable font for ReportLab.
+    Prefer ReportLab built-in CID fonts so PDF Chinese text does not become □□□
+    on Streamlit Cloud/Linux where Windows CJK fonts are usually absent.
+    """
     global _pdf_cjk_font_registered
     if not REPORTLAB_OK:
         return "Helvetica"
     if _pdf_cjk_font_registered:
-        return "CJKFont"
+        return "STSong-Light"
+
+    # Built-in CID font: reliable for CJK in ReportLab and does not require font files.
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        _pdf_cjk_font_registered = True
+        return "STSong-Light"
+    except Exception:
+        pass
+
     candidates = [
         "C:/Windows/Fonts/msjh.ttc",
         "C:/Windows/Fonts/mingliu.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
     for fp in candidates:
         try:
@@ -1066,21 +1081,23 @@ def _cached_daily_recommendations(weights_tuple):
     weights = dict(weights_tuple)
     return recommend_top_volume_stocks(
         volume_limit=100, top_n=8,
-        lookback_years=2, forecast_days=20,
+        lookback_years=1, forecast_days=20,
         weights=weights,
         progress_callback=None,
+        fast_mode=True,
+        finalist_count=18,
     )
 
 def render_daily_recommendations():
     st.markdown("### 🔥 每日推薦股票")
-    st.caption("掃描範圍：台股前 100 大成交量，不限自選股。此功能需要較多外部資料查詢，結果快取 1 小時。")
+    st.caption("掃描範圍：台股前 100 大成交量，不限自選股。新版採兩階段篩選：先快速掃描 100 檔，再對高分候選做完整分析；結果快取 1 小時。")
     c1,c2=st.columns([1,5])
     if c1.button("關閉推薦窗", use_container_width=True):
         st.session_state._show_reco=False
         st.rerun()
     try:
         weights_tuple=tuple(sorted(st.session_state.weights.items()))
-        with st.spinner("正在掃描前 100 大成交量台股並排序推薦…"):
+        with st.spinner("快速掃描前 100 大成交量台股，並對候選股做完整分析…"):
             rows=_cached_daily_recommendations(weights_tuple)
         if not rows:
             st.info("目前沒有篩出合適標的，或資料來源暫時忙碌。")
@@ -1531,10 +1548,19 @@ def batch():
     p.empty()
     df_out=pd.DataFrame(rows)
     st.dataframe(df_out,use_container_width=True,hide_index=True)
-    csv=df_out.to_csv(index=False,encoding="utf-8-sig")
-    st.download_button("💾 下載 CSV",csv,
+    csv_bytes = df_out.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("💾 下載 CSV", csv_bytes,
         file_name=f"batch_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv")
+        mime="text/csv; charset=utf-8")
+    try:
+        xlsx_io = io.BytesIO()
+        with pd.ExcelWriter(xlsx_io, engine="openpyxl") as writer:
+            df_out.to_excel(writer, index=False, sheet_name="批次分析")
+        st.download_button("📗 下載 Excel（避免中文亂碼）", xlsx_io.getvalue(),
+            file_name=f"batch_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception:
+        st.caption("若 CSV 在 Excel 顯示亂碼，請用資料匯入選 UTF-8，或安裝 openpyxl 後下載 Excel 檔。")
 
 # ── Main ───────────────────────────────────────────────────────────────────
 sym,abtn = sidebar()
