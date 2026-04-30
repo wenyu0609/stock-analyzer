@@ -4,6 +4,7 @@ Fixes: full theme CSS / mobile responsive / MACD-RSI collapsible+popout /
        smart chart zoom (scroll wheel + 2-finger pinch) / no accidental zoom on swipe
 """
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -54,7 +55,7 @@ _DEF = dict(
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
     show_macd=True, show_rsi=True,
     show_ma5=True, show_ma20=True, show_ma60=True,
-    chart_dragmode="pan", mobile_chart_mode=True,
+    chart_dragmode="pan", mobile_chart_mode=True, font_scale=100, chart_height_mode="自動",
     _show_reco=False,
     theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
     _last_params={},  # tracks params used for current result
@@ -83,6 +84,16 @@ CBG = "#14172a" if D else "#ffffff"
 CPP = "#0f1120" if D else "#f0f4ff"
 CGR = "#2d3154" if D else "#e5e7eb"
 CTX = "#8890aa" if D else "#6b7280"
+
+# ── User adjustable font size ──────────────────────────────────────────────
+_FONT_SCALE = int(st.session_state.get("font_scale", 100))
+_FONT_SCALE = max(85, min(130, _FONT_SCALE))
+FS_BASE = round(14 * _FONT_SCALE / 100, 1)
+FS_SMALL = round(11.5 * _FONT_SCALE / 100, 1)
+FS_TINY = round(10.5 * _FONT_SCALE / 100, 1)
+FS_H1 = round(20 * _FONT_SCALE / 100, 1)
+FS_METRIC = round(17 * _FONT_SCALE / 100, 1)
+FS_METRIC_MOBILE = round(15 * _FONT_SCALE / 100, 1)
 
 # ── CSS ────────────────────────────────────────────────────────────────────
 # Use string concatenation — avoids ALL f-string brace conflicts
@@ -140,6 +151,7 @@ section[data-testid="stSidebar"] > div {{ background:{SB} !important; }}
 html, body, p, label, input, textarea, select,
 button, h1, h2, h3, h4, h5, h6, li, a, td, th, caption {{
     font-family: 'Microsoft JhengHei','PingFang TC','Noto Sans TC',sans-serif !important;
+    font-size: {FS_BASE}px !important;
 }}
 /* Only apply CJK font to divs/spans that are NOT icon containers */
 div:not([class*="material"]) {{
@@ -154,9 +166,10 @@ details summary > div > span {{
 /* Step 4: All text colours */
 body, p, div, label, li, td, th, caption, h2, h3, h4 {{
     color: {TX} !important;
+    font-size: {FS_BASE}px !important;
 }}
 span {{ color: {TX} !important; }}
-h1 {{ color: {AC} !important; font-size:1.45rem !important; font-weight:700 !important; }}
+h1 {{ color: {AC} !important; font-size:{FS_H1}px !important; font-weight:700 !important; }}
 [data-testid="stSidebarContent"] * {{ color: {TX} !important; }}
 [data-testid="stSidebarContent"] h4 {{ color: {AC} !important; }}
 
@@ -200,7 +213,7 @@ h1 {{ color: {AC} !important; font-size:1.45rem !important; font-weight:700 !imp
 .stRadio > div > label, .stRadio label {{ color:{TX} !important; }}
 
 /* Step 9: Metrics */
-[data-testid="stMetricValue"] {{ color:{TX} !important; font-size:1.2rem !important; }}
+[data-testid="stMetricValue"] {{ color:{TX} !important; font-size:{FS_METRIC}px !important; }}
 [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] div {{ color:{DM} !important; }}
 [data-testid="stMetricDelta"] {{ color:{DM} !important; }}
 [data-testid="stMetric"] {{
@@ -247,9 +260,9 @@ hr {{ border-top:1px solid {BD} !important; }}
     background:{CD}; border:1px solid {BD};
     border-radius:10px; padding:12px 16px; margin-bottom:8px;
 }}
-.metric-card .lbl {{ color:{DM}; font-size:.74rem; margin-bottom:2px; }}
-.metric-card .val {{ color:{TX}; font-size:1.2rem; font-weight:700; }}
-.metric-card .sub {{ color:{AC}; font-size:.8rem; }}
+.metric-card .lbl {{ color:{DM}; font-size:{FS_TINY}px; margin-bottom:2px; }}
+.metric-card .val {{ color:{TX}; font-size:{FS_METRIC}px; font-weight:700; }}
+.metric-card .sub {{ color:{AC}; font-size:{FS_SMALL}px; }}
 .bull {{
     background:{BULL_BG}; color:{OK};
     padding:3px 12px; border-radius:20px; font-weight:700; display:inline-block;
@@ -270,7 +283,7 @@ hr {{ border-top:1px solid {BD} !important; }}
     background:{BEAR_BG}; color:{ER};
     padding:2px 10px; border-radius:20px; display:inline-block;
 }}
-.ni {{ border-left:3px solid {BD}; padding:5px 10px; margin:5px 0; font-size:.84rem; color:{DM}; }}
+.ni {{ border-left:3px solid {BD}; padding:5px 10px; margin:5px 0; font-size:{FS_SMALL}px; color:{DM}; }}
 .ni a {{ color:{DM}; text-decoration:none; }}
 .ni:hover {{ border-color:{AC}; }}
 
@@ -302,13 +315,24 @@ hr {{ border-top:1px solid {BD} !important; }}
 
 /* Step 15: Mobile */
 @media (max-width:768px) {{
-    h1 {{ font-size:1.2rem !important; }}
-    .metric-card .val {{ font-size:1rem !important; }}
-    [data-testid="stMetricValue"] {{ font-size:1rem !important; }}
+    .block-container {{ padding-left:.55rem !important; padding-right:.55rem !important; padding-top:.55rem !important; }}
+    h1 {{ font-size:{FS_H1}px !important; }}
+    .metric-card {{ padding:10px 11px !important; margin-bottom:7px !important; }}
+    .metric-card .val {{ font-size:{FS_METRIC_MOBILE}px !important; }}
+    [data-testid="stMetricValue"] {{ font-size:{FS_METRIC_MOBILE}px !important; }}
+    [data-testid="stHorizontalBlock"] {{ gap:.45rem !important; }}
+    .stPlotlyChart {{ margin-left:-.25rem !important; margin-right:-.25rem !important; }}
 }}
-/* Mobile chart: let Plotly receive pinch/drag gestures while finger is on chart. */
+/* Mobile chart: balance page scrolling and chart interaction.
+   pan mode keeps vertical page scroll; zoom mode lets Plotly receive pinch gestures. */
 .stPlotlyChart, .js-plotly-plot, .plot-container, .svg-container {{
     overscroll-behavior: contain !important;
+}}
+body.chart-pan-on .stPlotlyChart,
+body.chart-pan-on .js-plotly-plot,
+body.chart-pan-on .plot-container,
+body.chart-pan-on .svg-container {{
+    touch-action: pan-y pinch-zoom !important;
 }}
 body.chart-zoom-on .stPlotlyChart,
 body.chart-zoom-on .js-plotly-plot,
@@ -337,24 +361,25 @@ st.markdown(
         AC=AC, OK=OK, ER=ER, WA=WA,
         CBG=CBG, CPP=CPP, CGR=CGR, CTX=CTX,
         BULL_BG=BULL_BG, BEAR_BG=BEAR_BG, NEUT_BG=NEUT_BG, BHI_BG=BHI_BG,
+        FS_BASE=FS_BASE, FS_SMALL=FS_SMALL, FS_TINY=FS_TINY, FS_H1=FS_H1,
+        FS_METRIC=FS_METRIC, FS_METRIC_MOBILE=FS_METRIC_MOBILE,
     ) + "</style>",
     unsafe_allow_html=True
 )
 
-# Toggle CSS class for mobile pinch zoom mode.
-st.markdown(
-    """
+# Toggle parent CSS class for mobile chart gestures.
+# st.markdown() does not reliably execute <script> in all Streamlit deployments,
+# so we use components.html and touch the parent document explicitly.
+_chart_mode_cls = "chart-zoom-on" if (st.session_state.get("mobile_chart_mode", True) and st.session_state.get("chart_dragmode", "pan") == "zoom") else "chart-pan-on"
+components.html(f"""
 <script>
-(function(){
-  const cls = "chart-zoom-on";
-  const on = %s;
-  if (on) { document.body.classList.add(cls); }
-  else { document.body.classList.remove(cls); }
-})();
+(function(){{
+  const body = window.parent.document.body;
+  body.classList.remove("chart-zoom-on", "chart-pan-on");
+  body.classList.add("{_chart_mode_cls}");
+}})();
 </script>
-""" % ("true" if st.session_state.get("mobile_chart_mode", True) else "false"),
-    unsafe_allow_html=True
-)
+""", height=0)
 
 # ── Mobile chart scroll fix (JavaScript) ─────────────────────────────────
 # Inject JS to prevent chart from hijacking mobile scroll
@@ -502,7 +527,9 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
             row=rsi_row,col=1)
 
     # ── Layout ──
-    chart_height = 580 if rows==3 else (440 if rows==2 else 380)
+    chart_height = 560 if rows==3 else (430 if rows==2 else 380)
+    if st.session_state.get("mobile_chart_mode", True):
+        chart_height = 520 if rows==3 else (400 if rows==2 else 360)
     fig.update_layout(
         height=chart_height,
         paper_bgcolor=CPP, plot_bgcolor=CBG,
@@ -566,7 +593,7 @@ def render_subchart_popout(r, chart_type="MACD"):
         xaxis=dict(gridcolor=CGR),yaxis=dict(gridcolor=CGR),
         title=dict(text=title,font=dict(color=TX,size=13)))
     st.plotly_chart(fig,use_container_width=True,
-        config={"displaylogo":False,"scrollZoom":True,"dragmode":"pan",
+        config={"displaylogo":False,"responsive":True,"scrollZoom":True,"dragmode":"pan",
                 "modeBarButtonsToRemove":["autoScale2d","lasso2d","select2d"]})
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
@@ -579,6 +606,14 @@ def sidebar():
         st.markdown(
             "<p style='color:"+DM+";font-size:.78rem;margin-top:-8px'>台灣股市智能分析</p>",
             unsafe_allow_html=True)
+        with st.expander("外觀 / 手機顯示", expanded=False):
+            st.session_state.font_scale = st.slider(
+                "字體大小", 85, 130, int(st.session_state.font_scale), 5,
+                help="調整整個網頁的主要文字、卡片與表格字體大小")
+            st.session_state.mobile_chart_mode = st.checkbox(
+                "手機圖表手勢最佳化", st.session_state.mobile_chart_mode,
+                key="_mobile_zoom_top",
+                help="開啟後會改善手機上的圖表觸控體驗；搭配下方 pan/zoom 模式使用。")
         st.divider()
 
         # Search
@@ -640,9 +675,7 @@ def sidebar():
             st.session_state.show_ma60=_mc3.checkbox("MA60",st.session_state.show_ma60,key="_c_ma60")
             st.caption("MACD/RSI 副圖在分析頁圖表上方控制")
             st.markdown("**手機圖表操作**")
-            st.session_state.mobile_chart_mode = st.checkbox(
-                "啟用圖表手勢模式（雙指縮放、單指框選/拖曳）",
-                st.session_state.mobile_chart_mode, key="_mobile_zoom")
+            st.caption("手機手勢最佳化可在側邊欄上方「外觀 / 手機顯示」調整。")
             st.session_state.chart_dragmode = st.radio(
                 "主圖預設手勢", ["pan","zoom"],
                 index=0 if st.session_state.chart_dragmode=="pan" else 1,
@@ -674,12 +707,24 @@ def sidebar():
         with st.expander("分析權重",expanded=False):
             st.caption("七項總計須為 100%，會同時影響預測漂移與綜合評分")
             w={**DEFAULT_WEIGHTS, **st.session_state.weights}
+
+            def _sync_weight(src_key, dst_key):
+                # Streamlit runs callbacks before the next render, so this keeps
+                # number input and slider visually synchronized in both directions.
+                st.session_state[dst_key] = int(st.session_state[src_key])
+
             def _weight_row(label, key_s, key_n, val):
+                if key_s not in st.session_state:
+                    st.session_state[key_s] = int(val)
+                if key_n not in st.session_state:
+                    st.session_state[key_n] = int(st.session_state[key_s])
                 _c1, _c2 = st.columns([3,1])
-                _sv = _c1.slider(label, 0, 100, int(val), key=key_s)
-                _nv = _c2.number_input("", 0, 100, int(_sv), step=1, key=key_n,
-                                        label_visibility="collapsed")
-                return int(_nv)
+                _c1.slider(label, 0, 100, key=key_s,
+                           on_change=_sync_weight, args=(key_s, key_n))
+                _c2.number_input("", 0, 100, step=1, key=key_n,
+                                 label_visibility="collapsed",
+                                 on_change=_sync_weight, args=(key_n, key_s))
+                return int(st.session_state[key_s])
             wt = _weight_row("技術指標%", "wt_s", "wt_n", w["technical"])
             wm = _weight_row("ML模型%",   "wm_s", "wm_n", w["ml"])
             wn = _weight_row("新聞情緒%","wn_s", "wn_n", w["news"])
@@ -1090,7 +1135,7 @@ def _cached_daily_recommendations(weights_tuple):
 
 def render_daily_recommendations():
     st.markdown("### 🔥 每日推薦股票")
-    st.caption("掃描範圍：台股前 100 大成交量，不限自選股。新版採兩階段篩選：先快速掃描 100 檔，再對高分候選做完整分析；結果快取 1 小時。")
+    st.caption("掃描範圍：每日由 TWSE/TPEX 公開資料取得台股前 100 大成交量，不限自選股。流程：100 檔全部快速掃描 → 高分候選完整分析；結果快取 1 小時，重新整理或快取到期會更新。")
     c1,c2=st.columns([1,5])
     if c1.button("關閉推薦窗", use_container_width=True):
         st.session_state._show_reco=False
@@ -1190,6 +1235,8 @@ def show(r):
     # - dragmode="pan" set in layout (left-click drags/pans)
     chart_config={
         "displaylogo": False,
+        "responsive": True,
+        "displayModeBar": True,
         "scrollZoom": True,          # desktop: scroll to zoom
         "doubleClick": "reset",      # double-click resets view
         "modeBarButtonsToRemove": [
