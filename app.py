@@ -8,8 +8,24 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import warnings, io
+import warnings, io, time
 from datetime import datetime
+
+
+# Optional PDF deps
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors as rl_colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table as RLTable, TableStyle, Image as RLImage
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    REPORTLAB_OK = True
+except Exception:
+    REPORTLAB_OK = False
+
+L_ACCENT = "#3557b7"
 
 warnings.filterwarnings("ignore")
 
@@ -23,6 +39,8 @@ st.set_page_config(
 from core import (
     run_analysis, TW_NAME_CACHE, _load_twse_bulk, _load_tpex_bulk,
     compute_drift_bias, simple_forecast, backtest_directional,
+    simulate_macd_cross_strategy, recommend_top_volume_stocks,
+    friendly_error_message, DEFAULT_WEIGHTS,
     _cjk, SKLEARN_OK, XGB_OK, TORCH_OK, YF_OK,
 )
 
@@ -30,11 +48,13 @@ from core import (
 _DEF = dict(
     result=None, batch_results=[],
     watchlist=["2330","2454","0050","00878","2317"],
-    weights={"technical":40,"ml":35,"news":15,"fundamental":10},
+    weights=DEFAULT_WEIGHTS.copy(),
     forecast_days=30, lookback_years=3, train_ratio=0.8,
     chart_style="K棒", show_bb=True, show_sr=True, show_band=True,
     show_macd=True, show_rsi=True,
     show_ma5=True, show_ma20=True, show_ma60=True,
+    chart_dragmode="zoom", mobile_chart_mode=True,
+    _show_reco=False,
     theme="暗色", names_loaded=False, _trigger=False, _pending_sym="",
     _last_params={},  # tracks params used for current result
 )
@@ -284,8 +304,16 @@ hr {{ border-top:1px solid {BD} !important; }}
     h1 {{ font-size:1.2rem !important; }}
     .metric-card .val {{ font-size:1rem !important; }}
     [data-testid="stMetricValue"] {{ font-size:1rem !important; }}
-    .stPlotlyChart {{ touch-action: pan-y !important; }}
-    .js-plotly-plot {{ touch-action: pan-x pan-y !important; }}
+}}
+/* Mobile chart: let Plotly receive pinch/drag gestures while finger is on chart. */
+.stPlotlyChart, .js-plotly-plot, .plot-container, .svg-container {{
+    overscroll-behavior: contain !important;
+}}
+body.chart-zoom-on .stPlotlyChart,
+body.chart-zoom-on .js-plotly-plot,
+body.chart-zoom-on .plot-container,
+body.chart-zoom-on .svg-container {{
+    touch-action: none !important;
 }}
 """
 
@@ -312,6 +340,21 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# Toggle CSS class for mobile pinch zoom mode.
+st.markdown(
+    """
+<script>
+(function(){
+  const cls = "chart-zoom-on";
+  const on = %s;
+  if (on) { document.body.classList.add(cls); }
+  else { document.body.classList.remove(cls); }
+})();
+</script>
+""" % ("true" if st.session_state.get("mobile_chart_mode", True) else "false"),
+    unsafe_allow_html=True
+)
+
 # ── Mobile chart scroll fix (JavaScript) ─────────────────────────────────
 # Inject JS to prevent chart from hijacking mobile scroll
 
@@ -321,21 +364,34 @@ def badge(cls, t): return f"<span class='{cls}'>{t}</span>"
 
 def calc_score(r):
     ind=r["indicators"]; ml=r.get("ml_predict",{}); ns=r.get("news_sentiment",{})
-    fund=r.get("fundamental",{}); w=r.get("weights",st.session_state.weights)
-    wt=w.get("technical",40)/100; wm=w.get("ml",35)/100
-    wn=w.get("news",15)/100;      wf=w.get("fundamental",10)/100
+    fund=r.get("fundamental",{}); w={**DEFAULT_WEIGHTS, **r.get("weights",st.session_state.weights)}
+    wt=w.get("technical",25)/100; wm=w.get("ml",25)/100
+    wn=w.get("news",10)/100;      wf=w.get("fundamental",10)/100
+    wu=w.get("us_market",10)/100; wi=w.get("institutional",15)/100
+    wg=w.get("margin",5)/100
     try:
         mh=float(ind["macd_hist"].iloc[-1]); rsi=float(ind["rsi14"].iloc[-1])
         ms=float(ind["macd_hist"].std()) if len(ind["macd_hist"])>5 else 1.0
-        t=float(np.clip(mh/max(ms,1e-9),-1,1))*.5+float(np.clip((50-rsi)/50,-1,1))*(-.3)
-    except: t=0.0
+        t=float(np.clip(mh/max(ms,1e-9),-1,1))*.55+float(np.clip((rsi-50)/50,-1,1))*.25
+    except Exception:
+        t=0.0
     ml_s=(ml.get("prob_up",.5)-.5)*2
-    ns_s=.6 if ns.get("label")=="正面" else(-.6 if ns.get("label")=="負面" else 0.)
+    ns_s=ns.get("score", None)
+    if ns_s is None:
+        ns_s=.6 if ns.get("label") in ("正面","偏正面") else(-.6 if ns.get("label") in ("負面","偏負面") else 0.)
     fs=0.
     if fund.get("pe_ratio") and 0<fund["pe_ratio"]<15: fs+=.5
     if fund.get("pe_ratio") and fund["pe_ratio"]>40:   fs-=.5
     if fund.get("roe") and fund["roe"]>.15: fs+=.5
-    return float(np.clip(t*wt*2+ml_s*wm*2+ns_s*wn*2+fs*wf*2,-4,4))
+    mkt=r.get("mkt_ctx",{})
+    us_s=float(np.clip(mkt.get("nasdaq_ret_1",0)/.025,-1,1)*.3+
+               np.clip(mkt.get("sp500_ret_1",0)/.02,-1,1)*.2+
+               np.clip(mkt.get("semis_ret_1",0)/.03,-1,1)*.5)
+    inst_s=r.get("institutional",{}).get("inst_score",0.0)
+    margin_s=r.get("margin",{}).get("margin_score",0.0)
+    return float(np.clip(
+        t*wt*2+ml_s*wm*2+ns_s*wn*2+fs*wf*2+us_s*wu*2+inst_s*wi*2+margin_s*wg*2,
+        -4,4))
 
 def action_badge(s):
     if s>=1.5:   return badge("bull","偏多·可試單")
@@ -347,7 +403,8 @@ def action_badge(s):
 # ── Chart builder ──────────────────────────────────────────────────────────
 def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
                 show_macd=True, show_rsi=True,
-                show_ma5=True, show_ma20=True, show_ma60=True):
+                show_ma5=True, show_ma20=True, show_ma60=True,
+                dragmode="zoom"):
     df=r["df"]; ind=r["indicators"]; sr=r["sr"]; fc=r["forecast"]
     name=r["name"]; sym=r["symbol"]
 
@@ -454,8 +511,8 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
         xaxis_rangeslider_visible=False,
         margin=dict(l=0,r=0,t=30,b=0),
         hovermode="x unified",
-        # Scroll zoom enabled — mouse wheel to zoom on desktop
-        dragmode="pan",   # default = pan (left-drag moves chart)
+        # Mobile/desktop friendly: user can switch between zoom and pan
+        dragmode=dragmode,
     )
     for i in range(1,rows+1):
         fig.update_xaxes(gridcolor=CGR,row=i,col=1,
@@ -581,6 +638,15 @@ def sidebar():
             st.session_state.show_ma20=_mc2.checkbox("MA20",st.session_state.show_ma20,key="_c_ma20")
             st.session_state.show_ma60=_mc3.checkbox("MA60",st.session_state.show_ma60,key="_c_ma60")
             st.caption("MACD/RSI 副圖在分析頁圖表上方控制")
+            st.markdown("**手機圖表操作**")
+            st.session_state.mobile_chart_mode = st.checkbox(
+                "啟用圖表手勢模式（雙指縮放、單指框選/拖曳）",
+                st.session_state.mobile_chart_mode, key="_mobile_zoom")
+            st.session_state.chart_dragmode = st.radio(
+                "主圖預設手勢", ["zoom","pan"],
+                index=0 if st.session_state.chart_dragmode=="zoom" else 1,
+                horizontal=True, key="_dragmode",
+                help="zoom：手機較好放大；pan：手機較好拖動。右上角工具列也可切換。")
 
         with st.expander("分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
@@ -605,21 +671,22 @@ def sidebar():
 
         # Weight settings
         with st.expander("分析權重",expanded=False):
-            st.caption("四項總計須為 100%，影響趨勢預測方向")
-            w=st.session_state.weights
-            # Each row: slider on left, number input on right
+            st.caption("七項總計須為 100%，會同時影響預測漂移與綜合評分")
+            w={**DEFAULT_WEIGHTS, **st.session_state.weights}
             def _weight_row(label, key_s, key_n, val):
                 _c1, _c2 = st.columns([3,1])
-                _sv = _c1.slider(label, 0, 100, val, key=key_s, label_visibility="visible")
-                _nv = _c2.number_input("", 0, 100, _sv, step=1, key=key_n,
+                _sv = _c1.slider(label, 0, 100, int(val), key=key_s)
+                _nv = _c2.number_input("", 0, 100, int(_sv), step=1, key=key_n,
                                         label_visibility="collapsed")
-                # number_input takes precedence if user typed in it
-                return int(_nv) if _nv != _sv else int(_sv)
+                return int(_nv)
             wt = _weight_row("技術指標%", "wt_s", "wt_n", w["technical"])
-            wm = _weight_row("ML/NN%",   "wm_s", "wm_n", w["ml"])
+            wm = _weight_row("ML模型%",   "wm_s", "wm_n", w["ml"])
             wn = _weight_row("新聞情緒%","wn_s", "wn_n", w["news"])
             wf = _weight_row("基本面%",  "wf_s", "wf_n", w["fundamental"])
-            tot=wt+wm+wn+wf
+            wu = _weight_row("美股/國際盤%", "wu_s", "wu_n", w["us_market"])
+            wi = _weight_row("三大法人%", "wi_s", "wi_n", w["institutional"])
+            wg = _weight_row("融資融券%", "wg_s", "wg_n", w["margin"])
+            tot=wt+wm+wn+wf+wu+wi+wg
             _wc=OK if tot==100 else ER
             st.markdown(
                 "<span style='color:"+_wc+"'>"
@@ -628,20 +695,28 @@ def sidebar():
                 unsafe_allow_html=True)
             if st.button("▶ Apply 套用",use_container_width=True,disabled=(tot!=100)):
                 st.session_state.weights={
-                    "technical":wt,"ml":wm,"news":wn,"fundamental":wf}
+                    "technical":wt,"ml":wm,"news":wn,"fundamental":wf,
+                    "us_market":wu,"institutional":wi,"margin":wg}
                 if st.session_state.result:
                     r_=st.session_state.result
-                    nd=compute_drift_bias(r_["indicators"],r_.get("ml_predict",{}),{},
-                        r_.get("news_sentiment",{}),r_.get("fundamental",{}),
-                        st.session_state.weights)
+                    nd=compute_drift_bias(
+                        r_["indicators"], r_.get("ml_predict",{}), r_.get("nn_predict",{}),
+                        r_.get("news_sentiment",{}), r_.get("fundamental",{}),
+                        st.session_state.weights, r_.get("mkt_ctx",{}),
+                        r_.get("institutional",{}), r_.get("margin",{}))
                     nf=simple_forecast(r_["df"],days=r_["forecast_days"],
-                        n_paths=150,drift_bias=nd)
+                        n_paths=180,drift_bias=nd)
                     r_["forecast"]=nf; r_["drift_bias"]=nd
                     r_["weights"]=st.session_state.weights
                 st.rerun()
 
         st.divider()
-        st.caption(f"{'GB+XGB' if XGB_OK else 'GB'}{'+LSTM' if TORCH_OK else ''}")
+        if st.button("🔥 每日推薦股票（掃描前100大成交量）", use_container_width=True):
+            st.session_state._show_reco = True
+            st.rerun()
+
+        st.divider()
+        st.caption(f"{'GB+XGB' if XGB_OK else 'GB'} · 美股/法人/融資融券特徵")
     return sym, abtn
 
 # ── Run analysis ───────────────────────────────────────────────────────────
@@ -659,7 +734,11 @@ def analyze(sym):
         r["weights"]=st.session_state.weights
         st.session_state.result=r; p.empty()
     except Exception as e:
-        p.empty(); st.error(f"❌ {type(e).__name__}: {e}")
+        p.empty()
+        st.warning("⚠️ " + friendly_error_message(e))
+        with st.expander("查看技術細節", expanded=False):
+            st.code(str(e))
+
 
 # ── PDF ────────────────────────────────────────────────────────────────────
 
@@ -954,7 +1033,70 @@ def generate_pdf_bytes(analysis: dict, chart_png_bytes=None) -> bytes:
 
 _pdf_cjk_font_registered = False
 
+def _register_pdf_cjk_font() -> str:
+    global _pdf_cjk_font_registered
+    if not REPORTLAB_OK:
+        return "Helvetica"
+    if _pdf_cjk_font_registered:
+        return "CJKFont"
+    candidates = [
+        "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/mingliu.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for fp in candidates:
+        try:
+            if fp and __import__("os").path.exists(fp):
+                if fp.endswith(".ttc"):
+                    pdfmetrics.registerFont(TTFont("CJKFont", fp, subfontIndex=0))
+                else:
+                    pdfmetrics.registerFont(TTFont("CJKFont", fp))
+                _pdf_cjk_font_registered = True
+                return "CJKFont"
+        except Exception:
+            continue
+    return "Helvetica"
 
+# ── Daily recommendation panel ─────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_daily_recommendations(weights_tuple):
+    weights = dict(weights_tuple)
+    return recommend_top_volume_stocks(
+        volume_limit=100, top_n=8,
+        lookback_years=2, forecast_days=20,
+        weights=weights,
+        progress_callback=None,
+    )
+
+def render_daily_recommendations():
+    st.markdown("### 🔥 每日推薦股票")
+    st.caption("掃描範圍：台股前 100 大成交量，不限自選股。此功能需要較多外部資料查詢，結果快取 1 小時。")
+    c1,c2=st.columns([1,5])
+    if c1.button("關閉推薦窗", use_container_width=True):
+        st.session_state._show_reco=False
+        st.rerun()
+    try:
+        weights_tuple=tuple(sorted(st.session_state.weights.items()))
+        with st.spinner("正在掃描前 100 大成交量台股並排序推薦…"):
+            rows=_cached_daily_recommendations(weights_tuple)
+        if not rows:
+            st.info("目前沒有篩出合適標的，或資料來源暫時忙碌。")
+            return
+        for i, it in enumerate(rows, 1):
+            border = OK if i <= 3 else BD
+            st.markdown(
+                f"<div class='metric-card' style='border-color:{border}'>"
+                f"<div class='lbl'>Top {i} · 綜合分數 {it['score']:+.2f}</div>"
+                f"<div class='val'>{it['name']} <span style='font-size:.9rem;color:{DM}'>({it['code']})</span></div>"
+                f"<div class='sub'>現價 {it['last']:.2f}｜20日預測 {it['forecast_pct']:+.1f}%｜ML {it['ml_prob']:.0f}%｜法人 {it['inst_total']/1000:,.0f} 張</div>"
+                f"<p style='color:{TX};margin:.4rem 0 0'>推薦原因：{it['reason']}</p>"
+                f"</div>",
+                unsafe_allow_html=True)
+    except Exception as e:
+        st.warning("推薦掃描暫時無法完成：" + friendly_error_message(e))
 
 # ── Show result ────────────────────────────────────────────────────────────
 def show(r):
@@ -1022,7 +1164,8 @@ def show(r):
         show_rsi =st.session_state.show_rsi,
         show_ma5 =st.session_state.show_ma5,
         show_ma20=st.session_state.show_ma20,
-        show_ma60=st.session_state.show_ma60)
+        show_ma60=st.session_state.show_ma60,
+        dragmode=st.session_state.chart_dragmode)
 
     # Chart config:
     # - scrollZoom=True: mouse wheel zooms on desktop
@@ -1035,7 +1178,7 @@ def show(r):
         "modeBarButtonsToRemove": [
             "autoScale2d","lasso2d","select2d","toImage"
         ],
-        "modeBarButtonsToAdd": ["resetScale2d"],
+        "modeBarButtonsToAdd": ["zoom2d","pan2d","resetScale2d"],
     }
     st.plotly_chart(fig, use_container_width=True, config=chart_config)
 
@@ -1073,7 +1216,7 @@ def show(r):
             st.caption(f"PDF: {_pe}")
 
     # ── Analysis tabs ──
-    t1,t2,t3,t4,t5=st.tabs(["📊 ML / 回測","🔍 技術解讀","📋 基本面","📰 新聞","📍 關鍵價位"])
+    t1,t2,t3,t4,t5,t6,t7=st.tabs(["📊 ML / 回測","🔍 技術解讀","📋 基本面","📰 即時新聞","📍 關鍵價位","💰 籌碼/美股","🧪 策略回測"])
 
     with t1:
         ml_stats=r.get("ml_stats",{})
@@ -1118,11 +1261,22 @@ def show(r):
                 r3.metric("Sharpe",f"{bt2.get('sharpe',0):.2f}")
                 r4.metric("最大回撤",f"{bt2.get('max_drawdown',0):.1f}%")
             else: st.warning("樣本不足")
+        st.divider()
+        mbt=r.get("macd_cross_backtest",{})
+        st.markdown("**MACD 黃金交叉買入，持有 10 天**")
+        if mbt.get("n_trades",0)>0:
+            m1,m2,m3,m4=st.columns(4)
+            m1.metric("交易次數",mbt["n_trades"])
+            m2.metric("勝率",mbt["win_rate_text"])
+            m3.metric("平均報酬",f"{mbt.get('avg_return',0):+.2f}%")
+            m4.metric("最差/最佳",f"{mbt.get('worst_return',0):+.1f}% / {mbt.get('best_return',0):+.1f}%")
+        else:
+            st.info("這段資料期間沒有足夠的 MACD 黃金交叉樣本。")
 
     with t2:
         # Show full reason text from desktop-quality analysis
         try:
-            reason = build_reason_text(r)
+            reason = r.get("reason_text") or build_reason_text(r)
             if reason:
                 for line in reason.split("\n"):
                     if line.strip():
@@ -1172,6 +1326,55 @@ def show(r):
             delta=f"+{(tp-last)/last*100:.1f}%")
         st.caption(f"ATR(14)={atr:.2f}  RR={rr:.2f}x")
         st.info("💡 停損 = 現價 - ATR×1.5，停利 = 現價 + ATR×2.5，此為參考值，請依個人風險偏好調整。")
+
+    with t6:
+        inst=r.get("institutional",{})
+        margin=r.get("margin",{})
+        mkt=r.get("mkt_ctx",{})
+        st.markdown("**台股籌碼**")
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("外資買賣超",f"{inst.get('foreign_net',0)/1000:,.0f} 張")
+        c2.metric("投信買賣超",f"{inst.get('trust_net',0)/1000:,.0f} 張")
+        c3.metric("自營商買賣超",f"{inst.get('dealer_net',0)/1000:,.0f} 張")
+        c4.metric("三大法人合計",f"{inst.get('total_net',0)/1000:,.0f} 張",
+                  delta=f"score {inst.get('inst_score',0):+.2f}")
+        st.caption(f"資料來源：{inst.get('source','N/A')}｜日期：{inst.get('date','—')}")
+        st.markdown("**融資融券**")
+        m1,m2,m3,m4=st.columns(4)
+        m1.metric("融資餘額",f"{margin.get('margin_balance',0):,.0f} 張")
+        m2.metric("融資變化",f"{margin.get('margin_change',0):+,.0f} 張")
+        m3.metric("融券餘額",f"{margin.get('short_balance',0):,.0f} 張")
+        m4.metric("融券變化",f"{margin.get('short_change',0):+,.0f} 張",
+                  delta=f"score {margin.get('margin_score',0):+.2f}")
+        st.caption(f"資料來源：{margin.get('source','N/A')}｜日期：{margin.get('date','—')}")
+        st.markdown("**美股 / 國際盤背景**")
+        u1,u2,u3,u4=st.columns(4)
+        u1.metric("NASDAQ",f"{mkt.get('nasdaq_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('nasdaq_ret_5',0)*100:+.2f}%")
+        u2.metric("S&P500",f"{mkt.get('sp500_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('sp500_ret_5',0)*100:+.2f}%")
+        u3.metric("半導體ETF(SMH)",f"{mkt.get('semis_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('semis_ret_5',0)*100:+.2f}%")
+        u4.metric("VIX",f"{mkt.get('vix',20):.1f}")
+
+    with t7:
+        st.markdown("**MACD 黃金交叉策略模擬器**")
+        st.caption("問題範例：如果我在 MACD 黃金交叉時買入，持有 N 天的勝率是多少？")
+        c1,c2,c3=st.columns([1,1,2])
+        hd=c1.number_input("持有天數",1,120,10,key="macd_hold")
+        ct=c2.selectbox("交叉類型",["golden","death"],
+                        format_func=lambda x:"黃金交叉買入" if x=="golden" else "死亡交叉放空/避開",
+                        key="macd_cross_type")
+        if c3.button("執行 MACD 策略回測",use_container_width=True):
+            st.session_state["_macd_bt_custom"]=simulate_macd_cross_strategy(df,ind,hold_days=hd,cross_type=ct)
+        mb=st.session_state.get("_macd_bt_custom") or r.get("macd_cross_backtest",{})
+        if mb.get("n_trades",0)>0:
+            b1,b2,b3,b4,b5=st.columns(5)
+            b1.metric("交易次數",mb["n_trades"])
+            b2.metric("勝率",mb["win_rate_text"])
+            b3.metric("平均報酬",f"{mb.get('avg_return',0):+.2f}%")
+            b4.metric("中位數報酬",f"{mb.get('median_return',0):+.2f}%")
+            b5.metric("最差報酬",f"{mb.get('worst_return',0):+.2f}%")
+            st.dataframe(pd.DataFrame(mb.get("trades",[])),use_container_width=True,hide_index=True)
+        else:
+            st.info("此區間沒有符合條件的交叉訊號。")
 
 def _render_tech(r,df,ind,fc,ml_p,bt,last,med,fc_c,rsi_v):
     """Technical analysis explanation tab."""
@@ -1336,6 +1539,10 @@ def batch():
 # ── Main ───────────────────────────────────────────────────────────────────
 sym,abtn = sidebar()
 
+if st.session_state.get("_show_reco", False):
+    render_daily_recommendations()
+    st.divider()
+
 # Handle watchlist load
 if st.session_state.get("_pending_sym",""):
     _ps=st.session_state._pending_sym
@@ -1355,13 +1562,13 @@ if st.session_state.get("_do_batch"):
     st.session_state._do_batch=False
     try: batch()
     except Exception as e:
-        st.error(f"批次錯誤：{e}")
+        st.warning("批次錯誤：" + friendly_error_message(e))
 elif st.session_state.result:
     try: show(st.session_state.result)
     except Exception as e:
-        import traceback
-        st.error(f"顯示錯誤：{type(e).__name__}: {e}")
-        st.code(traceback.format_exc())
+        st.warning("顯示結果時發生問題：" + friendly_error_message(e))
+        with st.expander("查看技術細節", expanded=False):
+            st.code(str(e))
 else:
     # Landing page
     st.markdown(
