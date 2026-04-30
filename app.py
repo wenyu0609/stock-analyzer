@@ -63,6 +63,15 @@ _DEF = dict(
 for k,v in _DEF.items():
     if k not in st.session_state: st.session_state[k]=v
 
+# Streamlit widgets are evaluated later in the script.  When the user changes
+# the font slider, sync its widget key back into the canonical setting before
+# the main CSS is generated, otherwise the visual update can lag by one run.
+if "_font_scale_widget" in st.session_state:
+    try:
+        st.session_state.font_scale = int(st.session_state["_font_scale_widget"])
+    except Exception:
+        pass
+
 if not st.session_state.names_loaded:
     with st.spinner("載入股票名稱資料庫…"):
         _load_twse_bulk(); _load_tpex_bulk()
@@ -323,8 +332,9 @@ hr {{ border-top:1px solid {BD} !important; }}
     [data-testid="stHorizontalBlock"] {{ gap:.45rem !important; }}
     .stPlotlyChart {{ margin-left:-.25rem !important; margin-right:-.25rem !important; }}
 }}
-/* Mobile chart: balance page scrolling and chart interaction.
-   pan mode keeps vertical page scroll; zoom mode lets Plotly receive pinch gestures. */
+/* Mobile chart: one-finger vertical page scroll, two-finger chart pinch zoom.
+   The actual chart pinch is handled by injected JS below because Plotly inside
+   Streamlit does not consistently receive native pinch gestures on mobile. */
 .stPlotlyChart, .js-plotly-plot, .plot-container, .svg-container {{
     overscroll-behavior: contain !important;
 }}
@@ -332,13 +342,18 @@ body.chart-pan-on .stPlotlyChart,
 body.chart-pan-on .js-plotly-plot,
 body.chart-pan-on .plot-container,
 body.chart-pan-on .svg-container {{
-    touch-action: pan-y pinch-zoom !important;
+    touch-action: pan-y !important;
 }}
 body.chart-zoom-on .stPlotlyChart,
 body.chart-zoom-on .js-plotly-plot,
 body.chart-zoom-on .plot-container,
 body.chart-zoom-on .svg-container {{
     touch-action: none !important;
+}}
+.pinch-hint {{
+    background:{CD}; border:1px solid {BD}; border-radius:10px;
+    padding:8px 10px; margin:4px 0 8px 0; color:{DM};
+    font-size:{FS_SMALL}px;
 }}
 """
 
@@ -367,16 +382,93 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Toggle parent CSS class for mobile chart gestures.
-# st.markdown() does not reliably execute <script> in all Streamlit deployments,
-# so we use components.html and touch the parent document explicitly.
+# Toggle parent CSS class for mobile chart gestures and install a custom
+# two-finger pinch handler.  Plotly's native pinch zoom is unreliable inside
+# Streamlit's mobile iframe, so this converts two-finger distance changes into
+# Plotly.relayout() calls. One-finger vertical scrolling is left to the page.
 _chart_mode_cls = "chart-zoom-on" if (st.session_state.get("mobile_chart_mode", True) and st.session_state.get("chart_dragmode", "pan") == "zoom") else "chart-pan-on"
 components.html(f"""
 <script>
 (function(){{
-  const body = window.parent.document.body;
+  const doc = window.parent.document;
+  const body = doc.body;
   body.classList.remove("chart-zoom-on", "chart-pan-on");
   body.classList.add("{_chart_mode_cls}");
+
+  function numRange(v) {{
+    if (v === undefined || v === null) return null;
+    if (typeof v === 'number') return v;
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : Number(v);
+  }}
+  function outRange(v, isDate) {{
+    return isDate ? new Date(v).toISOString() : v;
+  }}
+  function dist(t1, t2) {{
+    const dx = t1.clientX - t2.clientX;
+    const dy = t1.clientY - t2.clientY;
+    return Math.sqrt(dx*dx + dy*dy);
+  }}
+  function installPinch(gd) {{
+    if (!gd || gd.__saPinchInstalled) return;
+    gd.__saPinchInstalled = true;
+    let pinch = null;
+
+    gd.addEventListener('touchstart', function(e) {{
+      if (e.touches && e.touches.length === 2) {{
+        const fl = gd._fullLayout;
+        if (!fl || !fl.xaxis || !fl.yaxis) return;
+        const xr0 = fl.xaxis.range || fl.xaxis._range;
+        const yr0 = fl.yaxis.range || fl.yaxis._range;
+        if (!xr0 || !yr0) return;
+        const x0 = numRange(xr0[0]), x1 = numRange(xr0[1]);
+        const y0 = numRange(yr0[0]), y1 = numRange(yr0[1]);
+        if (![x0,x1,y0,y1].every(Number.isFinite)) return;
+        pinch = {{
+          d0: Math.max(dist(e.touches[0], e.touches[1]), 1),
+          x0, x1, y0, y1,
+          xDate: isNaN(Number(xr0[0])) || isNaN(Number(xr0[1])),
+          lastTs: 0
+        }};
+      }}
+    }}, {{passive:false}});
+
+    gd.addEventListener('touchmove', function(e) {{
+      if (!pinch || !e.touches || e.touches.length !== 2) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - pinch.lastTs < 24) return;   // throttle, keeps mobile smooth
+      pinch.lastTs = now;
+      const d = Math.max(dist(e.touches[0], e.touches[1]), 1);
+      let scale = pinch.d0 / d;              // fingers apart => smaller range
+      scale = Math.max(0.18, Math.min(4.5, scale));
+      const xc = (pinch.x0 + pinch.x1) / 2;
+      const yc = (pinch.y0 + pinch.y1) / 2;
+      const xHalf = (pinch.x1 - pinch.x0) * scale / 2;
+      const yHalf = (pinch.y1 - pinch.y0) * scale / 2;
+      const update = {{
+        'xaxis.range': [outRange(xc - xHalf, pinch.xDate), outRange(xc + xHalf, pinch.xDate)],
+        'yaxis.range': [yc - yHalf, yc + yHalf]
+      }};
+      if (window.parent.Plotly) window.parent.Plotly.relayout(gd, update);
+      else if (window.Plotly) window.Plotly.relayout(gd, update);
+    }}, {{passive:false}});
+
+    gd.addEventListener('touchend', function(e) {{
+      if (!e.touches || e.touches.length < 2) pinch = null;
+    }}, {{passive:false}});
+  }}
+
+  function scan() {{
+    doc.querySelectorAll('.js-plotly-plot').forEach(installPinch);
+  }}
+  scan();
+  setTimeout(scan, 500);
+  setTimeout(scan, 1500);
+  if (!window.__saPinchObserver) {{
+    window.__saPinchObserver = new MutationObserver(scan);
+    window.__saPinchObserver.observe(doc.body, {{childList:true, subtree:true}});
+  }}
 }})();
 </script>
 """, height=0)
@@ -607,13 +699,30 @@ def sidebar():
             "<p style='color:"+DM+";font-size:.78rem;margin-top:-8px'>台灣股市智能分析</p>",
             unsafe_allow_html=True)
         with st.expander("外觀 / 手機顯示", expanded=False):
-            st.session_state.font_scale = st.slider(
+            _font_val = st.slider(
                 "字體大小", 85, 130, int(st.session_state.font_scale), 5,
-                help="調整整個網頁的主要文字、卡片與表格字體大小")
+                key="_font_scale_widget",
+                help="調整整個網頁的主要文字、卡片與表格字體大小。拖動後會立即套用。")
+            st.session_state.font_scale = int(_font_val)
+            # Late override: this is injected after the slider is evaluated, so the
+            # visual font size updates on the same rerun instead of waiting one more click.
+            _fs = max(85, min(130, int(_font_val))) / 100
+            st.markdown(f"""
+            <style>
+            html, body, p, label, input, textarea, select, button, li, a, td, th, caption {{
+                font-size: {14*_fs:.1f}px !important;
+            }}
+            .metric-card .lbl {{ font-size: {10.5*_fs:.1f}px !important; }}
+            .metric-card .val, [data-testid="stMetricValue"] {{ font-size: {18*_fs:.1f}px !important; }}
+            h1 {{ font-size: {23*_fs:.1f}px !important; }}
+            h2, h3, h4 {{ font-size: {16*_fs:.1f}px !important; }}
+            [data-testid="stDataFrame"] * {{ font-size: {13*_fs:.1f}px !important; }}
+            </style>
+            """, unsafe_allow_html=True)
             st.session_state.mobile_chart_mode = st.checkbox(
                 "手機圖表手勢最佳化", st.session_state.mobile_chart_mode,
                 key="_mobile_zoom_top",
-                help="開啟後會改善手機上的圖表觸控體驗；搭配下方 pan/zoom 模式使用。")
+                help="開啟後：一指可上下滑頁面，兩指在圖表上拉開/縮合即可放大縮小。")
         st.divider()
 
         # Search
@@ -675,12 +784,12 @@ def sidebar():
             st.session_state.show_ma60=_mc3.checkbox("MA60",st.session_state.show_ma60,key="_c_ma60")
             st.caption("MACD/RSI 副圖在分析頁圖表上方控制")
             st.markdown("**手機圖表操作**")
-            st.caption("手機手勢最佳化可在側邊欄上方「外觀 / 手機顯示」調整。")
+            st.caption("建議手機維持 pan：一指滑頁面，兩指在圖表上拉開/縮合會直接縮放圖表；不用先切 zoom。")
             st.session_state.chart_dragmode = st.radio(
                 "主圖預設手勢", ["pan","zoom"],
                 index=0 if st.session_state.chart_dragmode=="pan" else 1,
                 horizontal=True, key="_dragmode",
-                help="pan：預設拖動畫面；zoom：可框選放大。右上角工具列也可切換。手機雙指仍可縮放。")
+                help="pan：一指滑頁面/桌面左鍵平移；zoom：框選放大。手機兩指縮放在 pan 模式也可用。")
 
         with st.expander("分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
@@ -1214,7 +1323,10 @@ def show(r):
     st.session_state.show_rsi  = _new_rsi
     show_macd_pop = _cc3.button("MACD 展開", use_container_width=True)
     show_rsi_pop  = _cc4.button("RSI 展開",  use_container_width=True)
-    _cc5.caption("🖥 滾輪縮放・左鍵平移  📱 雙指縮放")
+    _cc5.caption("🖥 滾輪縮放・左鍵平移  📱 一指滑頁面・兩指直接縮放圖表")
+
+    if st.session_state.get("mobile_chart_mode", True):
+        st.markdown("<div class='pinch-hint'>📱 手機操作：維持 pan 模式時，一指上下滑頁面；兩指在圖表上拉開/縮合可直接放大縮小。</div>", unsafe_allow_html=True)
 
     # Main chart
     fig=build_chart(r,
