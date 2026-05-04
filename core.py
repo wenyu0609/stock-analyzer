@@ -56,10 +56,11 @@ SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEFAULT_WEIGHTS = {
-    "technical": 25,
-    "ml": 25,
-    "news": 10,
-    "fundamental": 10,
+    # Balanced default: trend + model are primary; fundamentals/news/chips confirm; margin is a risk overlay.
+    "technical": 20,
+    "ml": 24,
+    "news": 12,
+    "fundamental": 14,
     "us_market": 10,
     "institutional": 15,
     "margin": 5,
@@ -167,6 +168,131 @@ def _extract_twse_margin_row(row):
     margin_change = margin_bal - margin_prev if (margin_bal or margin_prev) else margin_buy - margin_sell - margin_repay
     short_change = short_bal - short_prev if (short_bal or short_prev) else short_sell - short_buy - short_repay
     return code, margin_bal, margin_change, short_bal, short_change
+
+
+def _normalize_lot_units(x):
+    """Normalize Taiwan margin figures to trading lots (張) when source returns shares."""
+    x = _safe_float(x)
+    return x / 1000.0 if abs(x) >= 1_000_000 else x
+
+
+def _margin_score_from_values(margin_change, short_change, margin_balance=0.0, short_balance=0.0):
+    """Contrarian-ish credit signal: financing increase is mild negative; short increase may be squeeze-positive."""
+    margin_change = _normalize_lot_units(margin_change)
+    short_change = _normalize_lot_units(short_change)
+    margin_balance = max(abs(_normalize_lot_units(margin_balance)), 1.0)
+    short_balance = max(abs(_normalize_lot_units(short_balance)), 1.0)
+    m_pressure = np.clip(margin_change / max(margin_balance * 0.08, 1500.0), -1, 1)
+    s_pressure = np.clip(short_change / max(short_balance * 0.25, 500.0), -1, 1)
+    return float(np.clip(-0.55 * m_pressure + 0.45 * s_pressure, -1, 1))
+
+
+def _make_margin_result(date, margin_balance, margin_change, short_balance, short_change, source, note=""):
+    margin_balance = _normalize_lot_units(margin_balance)
+    margin_change = _normalize_lot_units(margin_change)
+    short_balance = _normalize_lot_units(short_balance)
+    short_change = _normalize_lot_units(short_change)
+    return {
+        "date": str(date or ""),
+        "margin_balance": float(margin_balance),
+        "margin_change": float(margin_change),
+        "short_balance": float(short_balance),
+        "short_change": float(short_change),
+        "margin_score": _margin_score_from_values(margin_change, short_change, margin_balance, short_balance),
+        "source": source,
+        "note": note,
+    }
+
+
+def _looks_like_valid_margin(m):
+    return bool(m) and any(abs(float(m.get(k, 0) or 0)) > 1e-9 for k in ("margin_balance", "short_balance", "margin_change", "short_change"))
+
+
+def _fetch_finmind_margin(raw_code: str) -> dict:
+    """Fallback: FinMind open-data API, dataset TaiwanStockMarginPurchaseShortSale."""
+    if not REQUESTS_OK:
+        return {}
+    try:
+        end = pd.Timestamp.today().strftime("%Y-%m-%d")
+        start = (pd.Timestamp.today() - pd.Timedelta(days=45)).strftime("%Y-%m-%d")
+        url = "https://api.finmindtrade.com/api/v4/data"
+        params = {"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(raw_code), "start_date": start, "end_date": end}
+        r = requests.get(url, params=params, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return {}
+        payload = r.json() or {}
+        rows = payload.get("data", []) if isinstance(payload, dict) else []
+        if not rows:
+            return {}
+        rows = sorted(rows, key=lambda x: str(x.get("date", "")))
+        last = rows[-1]
+        prev = rows[-2] if len(rows) >= 2 else {}
+        mb = _safe_float(last.get("MarginPurchaseTodayBalance") or last.get("margin_purchase_today_balance") or last.get("MarginPurchaseTodayBalanceShares"))
+        sb = _safe_float(last.get("ShortSaleTodayBalance") or last.get("short_sale_today_balance") or last.get("ShortSaleTodayBalanceShares"))
+        pm = _safe_float(prev.get("MarginPurchaseTodayBalance") or prev.get("margin_purchase_today_balance") or prev.get("MarginPurchaseTodayBalanceShares")) if prev else 0.0
+        ps = _safe_float(prev.get("ShortSaleTodayBalance") or prev.get("short_sale_today_balance") or prev.get("ShortSaleTodayBalanceShares")) if prev else 0.0
+        mc = mb - pm if (mb or pm) else (_safe_float(last.get("MarginPurchaseBuy")) - _safe_float(last.get("MarginPurchaseSell")) - _safe_float(last.get("MarginPurchaseCashRepayment")))
+        sc = sb - ps if (sb or ps) else (_safe_float(last.get("ShortSaleSell")) - _safe_float(last.get("ShortSaleBuy")) - _safe_float(last.get("ShortSaleCashRepayment")))
+        if any(abs(x) > 0 for x in (mb, sb, mc, sc)):
+            return _make_margin_result(last.get("date", "latest"), mb, mc, sb, sc, "FinMind", "")
+    except Exception:
+        return {}
+    return {}
+
+
+def _extract_first_number_after(text: str, labels) -> float:
+    for label in labels:
+        pattern = re.escape(label) + r"[^0-9+\-]{0,30}([+\-]?[0-9][0-9,]*\.?[0-9]*)"
+        m = re.search(pattern, text)
+        if m:
+            return _safe_float(m.group(1))
+    return 0.0
+
+
+def _fetch_public_web_margin(raw_code: str) -> dict:
+    """Fallback scrape from public web pages such as Yahoo Finance TW and WantGoo."""
+    if not REQUESTS_OK:
+        return {}
+    urls = [
+        (f"https://tw.stock.yahoo.com/quote/{raw_code}.TW/margin", "Yahoo股市"),
+        (f"https://tw.stock.yahoo.com/quote/{raw_code}.TWO/margin", "Yahoo股市"),
+        (f"https://www.wantgoo.com/stock/{raw_code}/margin-trading/synopsis", "WantGoo"),
+    ]
+    for url, source in urls:
+        try:
+            r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
+            if r.status_code != 200 or not r.text:
+                continue
+            text = re.sub(r"<[^>]+>", " ", r.text)
+            text = re.sub(r"\s+", " ", text)
+            mb = _extract_first_number_after(text, ["融資餘額(張)", "融資餘額", "資餘額"])
+            sb = _extract_first_number_after(text, ["融券餘額(張)", "融券餘額", "券餘額"])
+            mc = _extract_first_number_after(text, ["融資增減(張)", "融資增減", "資增減", "融資變化"])
+            sc = _extract_first_number_after(text, ["融券增減(張)", "融券增減", "券增減", "融券變化"])
+            dm = re.search(r"(20\d{2}[/-]\d{1,2}[/-]\d{1,2})", text)
+            if any(abs(x) > 0 for x in (mb, sb, mc, sc)):
+                return _make_margin_result(dm.group(1) if dm else "latest", mb, mc, sb, sc, source, "")
+        except Exception:
+            continue
+    return {}
+
+
+def company_event_score(news: list, fund: dict = None) -> float:
+    """Score company-specific technology/order/business momentum from news and fundamentals."""
+    fund = fund or {}
+    text = " ".join((it.get("title", "") + " " + it.get("summary", "")) for it in (news or []))
+    pos_kw = ["接單", "訂單", "大單", "出貨", "量產", "擴產", "先進製程", "AI", "CoWoS", "HBM", "伺服器", "ASIC", "光通訊", "新產品", "營收創高", "法說上修", "展望樂觀"]
+    neg_kw = ["砍單", "降價", "庫存", "延後", "展望保守", "營收衰退", "毛利率下滑", "產能利用率下降", "競爭加劇", "客戶流失"]
+    pos = sum(1 for k in pos_kw if k.lower() in text.lower())
+    neg = sum(1 for k in neg_kw if k.lower() in text.lower())
+    s = (pos - neg) / max(pos + neg, 1)
+    if fund.get("rev_growth") is not None:
+        s += float(np.clip(fund.get("rev_growth", 0) / 0.25, -0.35, 0.35))
+    if fund.get("earn_growth") is not None:
+        s += float(np.clip(fund.get("earn_growth", 0) / 0.35, -0.35, 0.35))
+    if fund.get("profit_margin") is not None:
+        s += float(np.clip((fund.get("profit_margin", 0) - 0.08) / 0.25, -0.20, 0.25))
+    return float(np.clip(s, -1, 1))
 
 
 TX_ROUND_TRIP  = 0.001425 * 2 + 0.003
@@ -504,13 +630,13 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
     inst = inst or {}
     margin = margin or {}
 
-    w_tech = weights.get("technical", 25) / 100.0
-    w_ml   = weights.get("ml", 25) / 100.0
-    w_news = weights.get("news", 10) / 100.0
-    w_fund = weights.get("fundamental", 10) / 100.0
-    w_us   = weights.get("us_market", 10) / 100.0
-    w_inst = weights.get("institutional", 15) / 100.0
-    w_marg = weights.get("margin", 5) / 100.0
+    w_tech = weights.get("technical", DEFAULT_WEIGHTS["technical"]) / 100.0
+    w_ml   = weights.get("ml", DEFAULT_WEIGHTS["ml"]) / 100.0
+    w_news = weights.get("news", DEFAULT_WEIGHTS["news"]) / 100.0
+    w_fund = weights.get("fundamental", DEFAULT_WEIGHTS["fundamental"]) / 100.0
+    w_us   = weights.get("us_market", DEFAULT_WEIGHTS["us_market"]) / 100.0
+    w_inst = weights.get("institutional", DEFAULT_WEIGHTS["institutional"]) / 100.0
+    w_marg = weights.get("margin", DEFAULT_WEIGHTS["margin"]) / 100.0
 
     tech_sig = 0.0
     try:
@@ -552,6 +678,10 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
         if roe and roe > 0.15: fs += 0.45
         if roe and roe < 0.05: fs -= 0.25
         if dy and dy > 0.04: fs += 0.15
+        if fund.get("eps") and fund.get("eps") > 0: fs += 0.08
+        if fund.get("rev_growth") is not None: fs += float(np.clip(fund.get("rev_growth", 0) / 0.30, -0.25, 0.30))
+        if fund.get("earn_growth") is not None: fs += float(np.clip(fund.get("earn_growth", 0) / 0.40, -0.25, 0.30))
+        if fund.get("company_event_score") is not None: fs += float(np.clip(fund.get("company_event_score", 0), -1, 1)) * 0.30
     fs = float(np.clip(fs, -1, 1))
 
     us_sig = (
@@ -842,43 +972,42 @@ def fetch_institutional_flow(raw_code: str) -> dict:
 def fetch_margin_balance(raw_code: str) -> dict:
     """Fetch latest TWSE/TPEX margin financing and short balance.
 
-    Previous builds could return all zeros because TWSE JSON keys/table names vary
-    and holidays may leave today's endpoint empty. This parser checks several recent
-    dates and accepts data/data1/tables-style payloads before falling back safely.
+    Priority: TWSE official, TPEX, FinMind open data, then public Yahoo/WantGoo pages.
+    The function skips false all-zero parses; if all sources fail, note explains why.
     """
     result = {
         "date":"", "margin_balance":0.0, "margin_change":0.0,
         "short_balance":0.0, "short_change":0.0, "margin_score":0.0,
-        "source":"N/A", "note":"查無融資融券資料；可能為非信用交易標的、資料尚未公布或 API 暫時無資料。",
+        "source":"N/A", "note":"查無融資融券資料；已嘗試 TWSE/TPEX、FinMind、Yahoo股市與公開網頁；可能為非信用交易標的、資料尚未公布或網站暫時阻擋。",
     }
-    if not REQUESTS_OK: return result
-    for date in _tw_date_candidates(18):
-        try:
-            url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType=MS"
-            r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
-            if r.status_code != 200: continue
-            payload = r.json() or {}
-            for rows in _json_row_sets(payload):
-                for row in rows:
-                    code, margin_bal, margin_change, short_bal, short_change = _extract_twse_margin_row(row)
-                    if str(code).strip() != raw_code:
-                        continue
-                    score = float(np.clip((-margin_change / 5000.0) + (short_change / 3000.0), -1, 1))
-                    return {
-                        "date":date, "margin_balance":margin_bal, "margin_change":margin_change,
-                        "short_balance":short_bal, "short_change":short_change,
-                        "margin_score":score, "source":"TWSE", "note":"",
-                    }
-        except Exception:
-            continue
+    if not REQUESTS_OK:
+        return result
+    for date in _tw_date_candidates(28):
+        for sel in ("ALL", "ALLBUT0999", "MS"):
+            try:
+                url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType={sel}"
+                r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
+                if r.status_code != 200: continue
+                payload = r.json() or {}
+                for rows in _json_row_sets(payload):
+                    for row in rows:
+                        code, margin_bal, margin_change, short_bal, short_change = _extract_twse_margin_row(row)
+                        if str(code).strip() != raw_code:
+                            continue
+                        m = _make_margin_result(date, margin_bal, margin_change, short_bal, short_change, f"TWSE:{sel}", "")
+                        if _looks_like_valid_margin(m):
+                            return m
+            except Exception:
+                continue
     try:
-        url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"
-        r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"}, verify=False)
-        if r.status_code == 200:
+        for url in ("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance", "https://www.tpex.org.tw/openapi/v1/tpex_margin_balance"):
+            r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"}, verify=False)
+            if r.status_code != 200:
+                continue
             data = r.json() or []
             for item in data if isinstance(data, list) else []:
                 if not isinstance(item, dict): continue
-                code = str(item.get("SecuritiesCompanyCode") or item.get("Code") or item.get("股票代號") or item.get("代號") or "").strip()
+                code = str(item.get("SecuritiesCompanyCode") or item.get("Code") or item.get("股票代號") or item.get("代號") or item.get("SecuritiesCode") or "").strip()
                 if code != raw_code: continue
                 def find_val(*needles):
                     for k, v in item.items():
@@ -886,19 +1015,21 @@ def fetch_margin_balance(raw_code: str) -> dict:
                         if all(n in ks for n in needles):
                             return _safe_float(v)
                     return 0.0
-                margin_bal = find_val("融資", "餘額") or find_val("資", "餘額")
-                margin_change = find_val("融資", "增減") or find_val("資", "增減")
-                short_bal = find_val("融券", "餘額") or find_val("券", "餘額")
-                short_change = find_val("融券", "增減") or find_val("券", "增減")
-                score = float(np.clip((-margin_change / 5000.0) + (short_change / 3000.0), -1, 1))
-                return {
-                    "date":"latest", "margin_balance":margin_bal, "margin_change":margin_change,
-                    "short_balance":short_bal, "short_change":short_change,
-                    "margin_score":score, "source":"TPEX", "note":"",
-                }
+                margin_bal = find_val("融資", "餘額") or find_val("資", "餘額") or find_val("資餘額")
+                margin_change = find_val("融資", "增減") or find_val("資", "增減") or find_val("資增減")
+                short_bal = find_val("融券", "餘額") or find_val("券", "餘額") or find_val("券餘額")
+                short_change = find_val("融券", "增減") or find_val("券", "增減") or find_val("券增減")
+                m = _make_margin_result("latest", margin_bal, margin_change, short_bal, short_change, "TPEX", "")
+                if _looks_like_valid_margin(m):
+                    return m
     except Exception:
         pass
+    for fetcher in (_fetch_finmind_margin, _fetch_public_web_margin):
+        m = fetcher(raw_code)
+        if _looks_like_valid_margin(m):
+            return m
     return result
+
 
 def fetch_news(symbol: str, name: str, max_items: int = 8) -> list:
     """Fetch near-real-time Google News RSS and parse lightweight metadata."""
@@ -1310,7 +1441,9 @@ def run_analysis(symbol: str, lookback_years: int = 3,
                 for k, lbl in [("trailingPE","pe_ratio"),("trailingEps","eps"),
                                ("returnOnEquity","roe"),("dividendYield","div_yield"),
                                ("marketCap","market_cap"),("revenueGrowth","rev_growth"),
-                               ("earningsGrowth","earn_growth")]:
+                               ("earningsGrowth","earn_growth"),("totalRevenue","total_revenue"),
+                               ("revenuePerShare","rev_per_share"),("profitMargins","profit_margin"),
+                               ("grossMargins","gross_margin")]:
                     v = info.get(k)
                     if v is not None:
                         try: fund[lbl] = float(v)
@@ -1330,6 +1463,7 @@ def run_analysis(symbol: str, lookback_years: int = 3,
             margin = fmg.result()
             news, ns = fn.result()
             fund = ff.result()
+            fund["company_event_score"] = company_event_score(news, fund)
 
         mkt_ctx["_train_ratio"] = train_ratio
         mkt_ctx["_margin"] = margin
@@ -1360,6 +1494,7 @@ def run_analysis(symbol: str, lookback_years: int = 3,
             f"融資融券：融資變化 {margin.get('margin_change',0):,.0f} 張、融券變化 {margin.get('short_change',0):,.0f} 張，分數 {margin.get('margin_score',0):+.2f}。",
             f"美股背景：NASDAQ {mkt_ctx.get('nasdaq_ret_1',0)*100:+.2f}%、S&P500 {mkt_ctx.get('sp500_ret_1',0)*100:+.2f}%、SMH {mkt_ctx.get('smh_ret_1',mkt_ctx.get('semis_ret_1',0))*100:+.2f}%、費半SOX {mkt_ctx.get('sox_ret_1',0)*100:+.2f}%。",
             f"新聞情緒：{ns.get('label','中性')}（正面 {ns.get('positive_ct',0)} / 負面 {ns.get('negative_ct',0)}）。",
+            f"基本面/公司動能：P/E {fund.get('pe_ratio','—')}、EPS {fund.get('eps','—')}、營收成長 {fund.get('rev_growth',0)*100 if fund.get('rev_growth') is not None else 0:+.1f}%、殖利率 {fund.get('div_yield',0)*100 if fund.get('div_yield') is not None else 0:.2f}%、技術/訂單新聞分數 {fund.get('company_event_score',0):+.2f}。",
         ]
 
         # 8. Assemble

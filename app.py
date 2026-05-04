@@ -72,6 +72,14 @@ if "_font_scale_widget" in st.session_state:
     except Exception:
         pass
 
+
+WEIGHTS_VERSION = "2026-05-margin-multisource"
+if st.session_state.get("_weights_version") != WEIGHTS_VERSION:
+    st.session_state.weights = DEFAULT_WEIGHTS.copy()
+    for _k in ("wt_s","wt_n","wm_s","wm_n","wn_s","wn_n","wf_s","wf_n","wu_s","wu_n","wi_s","wi_n","wg_s","wg_n"):
+        st.session_state.pop(_k, None)
+    st.session_state["_weights_version"] = WEIGHTS_VERSION
+
 if not st.session_state.names_loaded:
     with st.spinner("載入股票名稱資料庫…"):
         _load_twse_bulk(); _load_tpex_bulk()
@@ -483,10 +491,10 @@ def badge(cls, t): return f"<span class='{cls}'>{t}</span>"
 def calc_score(r):
     ind=r["indicators"]; ml=r.get("ml_predict",{}); ns=r.get("news_sentiment",{})
     fund=r.get("fundamental",{}); w={**DEFAULT_WEIGHTS, **r.get("weights",st.session_state.weights)}
-    wt=w.get("technical",25)/100; wm=w.get("ml",25)/100
-    wn=w.get("news",10)/100;      wf=w.get("fundamental",10)/100
-    wu=w.get("us_market",10)/100; wi=w.get("institutional",15)/100
-    wg=w.get("margin",5)/100
+    wt=w.get("technical",DEFAULT_WEIGHTS["technical"])/100; wm=w.get("ml",DEFAULT_WEIGHTS["ml"])/100
+    wn=w.get("news",DEFAULT_WEIGHTS["news"])/100;      wf=w.get("fundamental",DEFAULT_WEIGHTS["fundamental"])/100
+    wu=w.get("us_market",DEFAULT_WEIGHTS["us_market"])/100; wi=w.get("institutional",DEFAULT_WEIGHTS["institutional"])/100
+    wg=w.get("margin",DEFAULT_WEIGHTS["margin"])/100
     try:
         mh=float(ind["macd_hist"].iloc[-1]); rsi=float(ind["rsi14"].iloc[-1])
         ms=float(ind["macd_hist"].std()) if len(ind["macd_hist"])>5 else 1.0
@@ -815,7 +823,7 @@ def sidebar():
 
         # Weight settings
         with st.expander("分析權重",expanded=False):
-            st.caption("七項總計須為 100%，會同時影響預測漂移與綜合評分")
+            st.caption("七項總計須為 100%，預設權重已依「技術趨勢 + ML + 基本面/訂單 + 法人籌碼 + 國際盤」調整")
             w={**DEFAULT_WEIGHTS, **st.session_state.weights}
 
             def _sync_weight(src_key, dst_key):
@@ -838,7 +846,7 @@ def sidebar():
             wt = _weight_row("技術指標%", "wt_s", "wt_n", w["technical"])
             wm = _weight_row("ML模型%",   "wm_s", "wm_n", w["ml"])
             wn = _weight_row("新聞情緒%","wn_s", "wn_n", w["news"])
-            wf = _weight_row("基本面%",  "wf_s", "wf_n", w["fundamental"])
+            wf = _weight_row("基本面/EPS/營收%",  "wf_s", "wf_n", w["fundamental"])
             wu = _weight_row("美股/國際盤%", "wu_s", "wu_n", w["us_market"])
             wi = _weight_row("三大法人%", "wi_s", "wi_n", w["institutional"])
             wg = _weight_row("融資融券%", "wg_s", "wg_n", w["margin"])
@@ -1523,7 +1531,7 @@ def show(r):
         m3.metric("融券餘額",f"{margin.get('short_balance',0):,.0f} 張")
         m4.metric("融券變化",f"{margin.get('short_change',0):+,.0f} 張",
                   delta=f"score {margin.get('margin_score',0):+.2f}")
-        st.caption(f"資料來源：{margin.get('source','N/A')}｜日期：{margin.get('date','—')}")
+        st.caption(f"資料來源：{margin.get('source','N/A')}｜日期：{margin.get('date','—')}｜非 0 才代表有實際抓到資料")
         if margin.get("note"):
             st.warning(margin.get("note"))
         st.markdown("**美股 / 國際盤背景**")
