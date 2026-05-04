@@ -504,7 +504,8 @@ def calc_score(r):
     mkt=r.get("mkt_ctx",{})
     us_s=float(np.clip(mkt.get("nasdaq_ret_1",0)/.025,-1,1)*.3+
                np.clip(mkt.get("sp500_ret_1",0)/.02,-1,1)*.2+
-               np.clip(mkt.get("semis_ret_1",0)/.03,-1,1)*.5)
+               np.clip(mkt.get("semis_ret_1",0)/.03,-1,1)*.35+
+               np.clip(mkt.get("sox_ret_1",0)/.03,-1,1)*.15)
     inst_s=r.get("institutional",{}).get("inst_score",0.0)
     margin_s=r.get("margin",{}).get("margin_score",0.0)
     return float(np.clip(
@@ -1523,12 +1524,15 @@ def show(r):
         m4.metric("融券變化",f"{margin.get('short_change',0):+,.0f} 張",
                   delta=f"score {margin.get('margin_score',0):+.2f}")
         st.caption(f"資料來源：{margin.get('source','N/A')}｜日期：{margin.get('date','—')}")
+        if margin.get("note"):
+            st.warning(margin.get("note"))
         st.markdown("**美股 / 國際盤背景**")
-        u1,u2,u3,u4=st.columns(4)
+        u1,u2,u3,u4,u5=st.columns(5)
         u1.metric("NASDAQ",f"{mkt.get('nasdaq_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('nasdaq_ret_5',0)*100:+.2f}%")
         u2.metric("S&P500",f"{mkt.get('sp500_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('sp500_ret_5',0)*100:+.2f}%")
-        u3.metric("半導體ETF(SMH)",f"{mkt.get('semis_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('semis_ret_5',0)*100:+.2f}%")
-        u4.metric("VIX",f"{mkt.get('vix',20):.1f}")
+        u3.metric("SMH",f"{mkt.get('smh_ret_1',mkt.get('semis_ret_1',0))*100:+.2f}%",f"5日 {mkt.get('smh_ret_5',mkt.get('semis_ret_5',0))*100:+.2f}%")
+        u4.metric("費半SOX",f"{mkt.get('sox_ret_1',0)*100:+.2f}%",f"5日 {mkt.get('sox_ret_5',0)*100:+.2f}%")
+        u5.metric("VIX",f"{mkt.get('vix',20):.1f}")
 
     with t7:
         st.markdown("**MACD 黃金交叉策略模擬器**")

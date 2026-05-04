@@ -108,6 +108,67 @@ def _tw_date_candidates(days: int = 10):
     base = pd.Timestamp.today().normalize()
     return [(base - pd.Timedelta(days=i)).strftime("%Y%m%d") for i in range(days)]
 
+
+def _json_row_sets(payload):
+    """Yield table-like row lists from TWSE/TPEX JSON payloads.
+    TWSE endpoints have changed key names across years (data/data1/tables),
+    so this keeps the parser tolerant instead of returning all-zero values.
+    """
+    if isinstance(payload, list):
+        if payload and all(isinstance(x, (list, tuple, dict)) for x in payload):
+            yield payload
+        return
+    if not isinstance(payload, dict):
+        return
+    for key in ("data", "data1", "data2", "aaData", "items"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and rows:
+            yield rows
+    tables = payload.get("tables")
+    if isinstance(tables, list):
+        for t in tables:
+            if isinstance(t, dict):
+                rows = t.get("data") or t.get("rows")
+                if isinstance(rows, list) and rows:
+                    yield rows
+
+def _extract_twse_margin_row(row):
+    """Parse one TWSE MI_MARGN row into margin/short fields."""
+    if isinstance(row, dict):
+        code = str(row.get("股票代號") or row.get("Code") or row.get("code") or row.get("SecuritiesCode") or "").strip()
+        def g(*keys):
+            for k in keys:
+                if k in row:
+                    return _safe_float(row.get(k))
+            return 0.0
+        margin_bal = g("融資今日餘額", "融資餘額", "MarginPurchaseTodayBalance", "TodayBalance")
+        margin_prev = g("融資前日餘額", "MarginPurchasePreviousBalance", "PreviousBalance")
+        margin_buy = g("融資買進", "MarginPurchaseBuy")
+        margin_sell = g("融資賣出", "MarginPurchaseSell")
+        margin_repay = g("融資現金償還", "CashRepayment")
+        short_bal = g("融券今日餘額", "融券餘額", "ShortSaleTodayBalance")
+        short_prev = g("融券前日餘額", "ShortSalePreviousBalance")
+        short_sell = g("融券賣出", "ShortSaleSell")
+        short_buy = g("融券買進", "ShortSaleBuy")
+        short_repay = g("融券現券償還", "StockRepayment")
+    else:
+        vals = [str(x).strip() for x in row]
+        code = vals[0] if vals else ""
+        margin_buy = _safe_float(vals[2]) if len(vals) > 2 else 0.0
+        margin_sell = _safe_float(vals[3]) if len(vals) > 3 else 0.0
+        margin_repay = _safe_float(vals[4]) if len(vals) > 4 else 0.0
+        margin_prev = _safe_float(vals[5]) if len(vals) > 5 else 0.0
+        margin_bal = _safe_float(vals[6]) if len(vals) > 6 else 0.0
+        short_sell = _safe_float(vals[8]) if len(vals) > 8 else 0.0
+        short_buy = _safe_float(vals[9]) if len(vals) > 9 else 0.0
+        short_repay = _safe_float(vals[10]) if len(vals) > 10 else 0.0
+        short_prev = _safe_float(vals[11]) if len(vals) > 11 else 0.0
+        short_bal = _safe_float(vals[12]) if len(vals) > 12 else 0.0
+    margin_change = margin_bal - margin_prev if (margin_bal or margin_prev) else margin_buy - margin_sell - margin_repay
+    short_change = short_bal - short_prev if (short_bal or short_prev) else short_sell - short_buy - short_repay
+    return code, margin_bal, margin_change, short_bal, short_change
+
+
 TX_ROUND_TRIP  = 0.001425 * 2 + 0.003
 LSTM_SEQ_LEN   = 20
 LSTM_FEATURES  = 19
@@ -496,7 +557,8 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
     us_sig = (
         np.clip(mkt_ctx.get("nasdaq_ret_1", 0.0) / 0.025, -1, 1) * 0.30 +
         np.clip(mkt_ctx.get("sp500_ret_1", 0.0) / 0.020, -1, 1) * 0.20 +
-        np.clip(mkt_ctx.get("semis_ret_1", 0.0) / 0.030, -1, 1) * 0.35 +
+        np.clip(mkt_ctx.get("semis_ret_1", 0.0) / 0.030, -1, 1) * 0.25 +
+        np.clip(mkt_ctx.get("sox_ret_1", 0.0) / 0.030, -1, 1) * 0.10 +
         np.clip(mkt_ctx.get("taiex_ret_1", 0.0) / 0.020, -1, 1) * 0.15
     )
     us_sig = float(np.clip(us_sig, -1, 1))
@@ -698,13 +760,16 @@ def _yf_return(ticker: str, period: str = "10d") -> dict:
     return out
 
 def fetch_market_context() -> dict:
-    """Fetch TAIEX, VIX, US indices, semiconductor ETF context."""
+    """Fetch TAIEX, VIX, US indices, SMH ETF and Philadelphia Semiconductor Index (^SOX)."""
     ctx = {
         "taiex_ret_1":0.0, "taiex_ret_5":0.0, "taiex_vol":0.01,
         "vix":20.0, "usd_twd":31.5,
         "nasdaq_ret_1":0.0, "nasdaq_ret_5":0.0,
         "sp500_ret_1":0.0, "sp500_ret_5":0.0,
         "semis_ret_1":0.0, "semis_ret_5":0.0,
+        "smh_ret_1":0.0, "smh_ret_5":0.0,
+        "sox_ret_1":0.0, "sox_ret_5":0.0,
+        "sox_last":None,
     }
     if not YF_OK: return ctx
     try:
@@ -728,11 +793,17 @@ def fetch_market_context() -> dict:
         pass
     ndq = _yf_return("^IXIC", "10d")
     spx = _yf_return("^GSPC", "10d")
-    sem = _yf_return("SMH", "10d")
+    smh = _yf_return("SMH", "10d")
+    sox = _yf_return("^SOX", "10d")
+    semi_1 = [x for x in (smh["ret_1"], sox["ret_1"]) if abs(x) > 1e-12]
+    semi_5 = [x for x in (smh["ret_5"], sox["ret_5"]) if abs(x) > 1e-12]
     ctx.update({
         "nasdaq_ret_1": ndq["ret_1"], "nasdaq_ret_5": ndq["ret_5"],
         "sp500_ret_1": spx["ret_1"], "sp500_ret_5": spx["ret_5"],
-        "semis_ret_1": sem["ret_1"], "semis_ret_5": sem["ret_5"],
+        "smh_ret_1": smh["ret_1"], "smh_ret_5": smh["ret_5"],
+        "sox_ret_1": sox["ret_1"], "sox_ret_5": sox["ret_5"], "sox_last": sox.get("last"),
+        "semis_ret_1": float(np.mean(semi_1)) if semi_1 else smh["ret_1"],
+        "semis_ret_5": float(np.mean(semi_5)) if semi_5 else smh["ret_5"],
     })
     return ctx
 
@@ -769,38 +840,64 @@ def fetch_institutional_flow(raw_code: str) -> dict:
     return result
 
 def fetch_margin_balance(raw_code: str) -> dict:
-    """Fetch latest TWSE margin financing/short balance. Best-effort."""
+    """Fetch latest TWSE/TPEX margin financing and short balance.
+
+    Previous builds could return all zeros because TWSE JSON keys/table names vary
+    and holidays may leave today's endpoint empty. This parser checks several recent
+    dates and accepts data/data1/tables-style payloads before falling back safely.
+    """
     result = {
         "date":"", "margin_balance":0.0, "margin_change":0.0,
         "short_balance":0.0, "short_change":0.0, "margin_score":0.0,
-        "source":"N/A",
+        "source":"N/A", "note":"查無融資融券資料；可能為非信用交易標的、資料尚未公布或 API 暫時無資料。",
     }
     if not REQUESTS_OK: return result
-    for date in _tw_date_candidates(12):
+    for date in _tw_date_candidates(18):
         try:
             url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date}&selectType=MS"
-            r = requests.get(url, timeout=7, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
+            r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
             if r.status_code != 200: continue
-            data = r.json() or {}
-            rows = data.get("data", [])
-            for row in rows:
-                if not row or str(row[0]).strip() != raw_code: continue
-                # Common TWSE row:
-                # code, name, margin buy, margin sell, cash repay, prev bal, today bal,
-                # margin limit, short sell, short buy, short repay, prev short, today short, short limit...
-                margin_change = _safe_float(row[2]) - _safe_float(row[3]) - _safe_float(row[4]) if len(row) > 4 else 0.0
-                margin_bal    = _safe_float(row[6]) if len(row) > 6 else 0.0
-                short_change  = _safe_float(row[8]) - _safe_float(row[9]) - _safe_float(row[10]) if len(row) > 10 else 0.0
-                short_bal     = _safe_float(row[12]) if len(row) > 12 else 0.0
-                # Rising shorts can be bullish squeeze, but rising margin is overheated; use conservative blend.
-                score = np.clip((-margin_change / 5000.0) + (short_change / 3000.0), -1, 1)
-                return {
-                    "date":date, "margin_balance":margin_bal, "margin_change":margin_change,
-                    "short_balance":short_bal, "short_change":short_change,
-                    "margin_score":float(score), "source":"TWSE",
-                }
+            payload = r.json() or {}
+            for rows in _json_row_sets(payload):
+                for row in rows:
+                    code, margin_bal, margin_change, short_bal, short_change = _extract_twse_margin_row(row)
+                    if str(code).strip() != raw_code:
+                        continue
+                    score = float(np.clip((-margin_change / 5000.0) + (short_change / 3000.0), -1, 1))
+                    return {
+                        "date":date, "margin_balance":margin_bal, "margin_change":margin_change,
+                        "short_balance":short_bal, "short_change":short_change,
+                        "margin_score":score, "source":"TWSE", "note":"",
+                    }
         except Exception:
             continue
+    try:
+        url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"
+        r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"}, verify=False)
+        if r.status_code == 200:
+            data = r.json() or []
+            for item in data if isinstance(data, list) else []:
+                if not isinstance(item, dict): continue
+                code = str(item.get("SecuritiesCompanyCode") or item.get("Code") or item.get("股票代號") or item.get("代號") or "").strip()
+                if code != raw_code: continue
+                def find_val(*needles):
+                    for k, v in item.items():
+                        ks = str(k)
+                        if all(n in ks for n in needles):
+                            return _safe_float(v)
+                    return 0.0
+                margin_bal = find_val("融資", "餘額") or find_val("資", "餘額")
+                margin_change = find_val("融資", "增減") or find_val("資", "增減")
+                short_bal = find_val("融券", "餘額") or find_val("券", "餘額")
+                short_change = find_val("融券", "增減") or find_val("券", "增減")
+                score = float(np.clip((-margin_change / 5000.0) + (short_change / 3000.0), -1, 1))
+                return {
+                    "date":"latest", "margin_balance":margin_bal, "margin_change":margin_change,
+                    "short_balance":short_bal, "short_change":short_change,
+                    "margin_score":score, "source":"TPEX", "note":"",
+                }
+    except Exception:
+        pass
     return result
 
 def fetch_news(symbol: str, name: str, max_items: int = 8) -> list:
@@ -1261,7 +1358,7 @@ def run_analysis(symbol: str, lookback_years: int = 3,
             diag["text"],
             f"三大法人：合計買賣超 {inst.get('total_net',0)/1000:,.0f} 張，分數 {inst.get('inst_score',0):+.2f}。",
             f"融資融券：融資變化 {margin.get('margin_change',0):,.0f} 張、融券變化 {margin.get('short_change',0):,.0f} 張，分數 {margin.get('margin_score',0):+.2f}。",
-            f"美股背景：NASDAQ {mkt_ctx.get('nasdaq_ret_1',0)*100:+.2f}%、S&P500 {mkt_ctx.get('sp500_ret_1',0)*100:+.2f}%、半導體ETF {mkt_ctx.get('semis_ret_1',0)*100:+.2f}%。",
+            f"美股背景：NASDAQ {mkt_ctx.get('nasdaq_ret_1',0)*100:+.2f}%、S&P500 {mkt_ctx.get('sp500_ret_1',0)*100:+.2f}%、SMH {mkt_ctx.get('smh_ret_1',mkt_ctx.get('semis_ret_1',0))*100:+.2f}%、費半SOX {mkt_ctx.get('sox_ret_1',0)*100:+.2f}%。",
             f"新聞情緒：{ns.get('label','中性')}（正面 {ns.get('positive_ct',0)} / 負面 {ns.get('negative_ct',0)}）。",
         ]
 
