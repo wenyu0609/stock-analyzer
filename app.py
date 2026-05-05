@@ -495,6 +495,24 @@ components.html(f"""
 # ── Helpers ────────────────────────────────────────────────────────────────
 def badge(cls, t): return f"<span class='{cls}'>{t}</span>"
 
+def _plotly_pan_config():
+    return {
+        "displaylogo": False,
+        "responsive": True,
+        "displayModeBar": True,
+        "scrollZoom": True,
+        "doubleClick": "reset",
+        "modeBarButtonsToRemove": ["autoScale2d","lasso2d","select2d","toImage"],
+        "modeBarButtonsToAdd": ["zoom2d","pan2d","resetScale2d"],
+    }
+
+def _return_model_label(name: str) -> str:
+    return {
+        "baseline": "基準報酬率模型",
+        "return_global": "全市場報酬率模型",
+        "return_segment_blend": "分段融合報酬率模型",
+    }.get(str(name or ""), str(name or "—"))
+
 def _streamlit_secret_key() -> str:
     try:
         return (
@@ -1465,8 +1483,8 @@ def show(r):
                 else:
                     st.metric("預測報酬",f"{rp.get('expected_return',0)*100:+.2f}%")
                     st.metric("報酬上漲機率",f"{rp.get('prob_up',0.5)*100:.1f}%")
-                    st.metric("Segment",rp.get("segment","—"))
-                    st.caption(f"{rp.get('model','return model')} · samples={rp.get('n_samples',0)}")
+                    st.metric("分段",rp.get("segment","—"))
+                    st.caption(f"{_return_model_label(rp.get('model',''))} · samples={rp.get('n_samples',0)}")
         with b:
             st.markdown("**回測（含台灣市場交易成本 ~0.588%）**")
             if bt.get("n_trades",0)>0:
@@ -1614,6 +1632,7 @@ def show(r):
 
     with t8:
         st.markdown("**盤中 1 分鐘走向**")
+        st.caption("互動模式預設 Pan：桌面可滾輪縮放、左鍵平移、雙擊重置；手機可一指滑頁面、兩指縮放圖表。")
         if st.button("手動更新盤中資料", key="refresh_intraday_now", use_container_width=True):
             try:
                 _cached_intraday.clear()
@@ -1656,8 +1675,9 @@ def show(r):
                 fig_i.update_layout(height=460,template="plotly_dark" if D else "plotly_white",
                     hovermode="x unified",xaxis_rangeslider_visible=False,
                     paper_bgcolor=CBG,plot_bgcolor=CBG,font=dict(color=TX),
-                    margin=dict(l=10,r=10,t=45,b=10))
-                st.plotly_chart(fig_i,use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
+                    margin=dict(l=10,r=10,t=45,b=10),
+                    dragmode=st.session_state.get("chart_dragmode","pan"))
+                st.plotly_chart(fig_i,use_container_width=True,config=_plotly_pan_config())
 
                 fig_p=go.Figure()
                 if not pred.empty:
@@ -1673,8 +1693,9 @@ def show(r):
                             hovertemplate="時間=%{x|%H:%M}<br>實際價格=%{y:.2f}<extra></extra>"))
                 fig_p.update_layout(height=360,template="plotly_dark" if D else "plotly_white",
                     hovermode="x unified",paper_bgcolor=CBG,plot_bgcolor=CBG,font=dict(color=TX),
-                    margin=dict(l=10,r=10,t=35,b=10),legend=dict(orientation="h"))
-                st.plotly_chart(fig_p,use_container_width=True,config={"displaylogo":False,"scrollZoom":True})
+                    margin=dict(l=10,r=10,t=35,b=10),legend=dict(orientation="h"),
+                    dragmode=st.session_state.get("chart_dragmode","pan"))
+                st.plotly_chart(fig_p,use_container_width=True,config=_plotly_pan_config())
 
                 rows=idf.reset_index().rename(columns={"index":"時間"})
                 rows["時間"]=pd.to_datetime(rows["時間"]).dt.strftime("%H:%M")
@@ -1694,7 +1715,7 @@ def show(r):
         c2.metric("上漲機率",f"{rp.get('prob_up',0.5)*100:.1f}%")
         c3.metric("WF 命中率",rb.get("hit_rate_text","N/A"))
         c4.metric("MAE",f"{rb.get('mae',0)*100:.2f}%")
-        st.caption(f"目前 segment：{rp.get('segment','—')}；模型：{rp.get('model','—')}")
+        st.caption(f"目前分段：{rp.get('segment','—')}；模型：{_return_model_label(rp.get('model',''))}")
         if isinstance(d,pd.DataFrame) and not d.empty:
             out=d.copy()
             out["date"]=pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
@@ -1703,6 +1724,7 @@ def show(r):
             out["hit"]=out["hit"].map({True:"命中",False:"未命中"})
             st.dataframe(out.rename(columns={
                 "date":"日期","segment":"segment",
+                "segment":"分段",
                 "predicted_return":"預測報酬(%)",
                 "actual_return":"實際報酬(%)",
                 "hit":"是否命中",

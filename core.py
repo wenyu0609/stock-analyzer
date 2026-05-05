@@ -1175,6 +1175,19 @@ def _time_segment(df: pd.DataFrame, ind: dict, idx: int) -> str:
         return "unknown"
 
 
+def segment_to_zh(segment: str) -> str:
+    """Translate internal model segment key to user-facing Chinese."""
+    parts = str(segment or "").split("_")
+    phase_map = {"early": "月初", "mid": "月中", "late": "月末"}
+    trend_map = {"up": "多頭", "down": "空頭", "side": "盤整"}
+    vol_map = {"normalvol": "正常波動", "highvol": "高波動"}
+    if len(parts) >= 3:
+        return f"{phase_map.get(parts[0], parts[0])}｜{trend_map.get(parts[1], parts[1])}｜{vol_map.get(parts[2], parts[2])}"
+    if segment == "unknown":
+        return "未知分段"
+    return str(segment or "未知分段")
+
+
 def _build_return_samples(df, ind, sr, horizon=10, mkt_ctx=None, inst=None):
     X, y, segs, idxs = [], [], [], []
     h = max(1, int(horizon))
@@ -1218,7 +1231,7 @@ def predict_future_return_model(df, ind, sr, horizon=10, mkt_ctx=None, inst=None
         return {
             "expected_return": baseline,
             "prob_up": float(1 / (1 + np.exp(-baseline / 0.04))),
-            "segment": _time_segment(df, ind, len(df) - 1),
+            "segment": segment_to_zh(_time_segment(df, ind, len(df) - 1)),
             "model": "baseline",
             "residual_std": float(df["Close"].pct_change().tail(60).std() * np.sqrt(max(1, int(horizon)))),
         }
@@ -1243,7 +1256,7 @@ def predict_future_return_model(df, ind, sr, horizon=10, mkt_ctx=None, inst=None
     return {
         "expected_return": pred,
         "prob_up": prob_up,
-        "segment": current_seg,
+        "segment": segment_to_zh(current_seg),
         "model": model_name,
         "residual_std": resid_std,
         "n_samples": int(len(X)),
@@ -1274,7 +1287,7 @@ def walk_forward_return_backtest(df, ind, sr, horizon=10, mkt_ctx=None, inst=Non
             actual = float(y[pos])
             rows.append({
                 "date": idxs[pos],
-                "segment": str(segs[pos]),
+                "segment": segment_to_zh(str(segs[pos])),
                 "predicted_return": float(np.clip(pred, -0.35, 0.35)),
                 "actual_return": actual,
                 "hit": bool(np.sign(pred) == np.sign(actual)) if actual != 0 else False,
