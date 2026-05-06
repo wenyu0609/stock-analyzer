@@ -589,6 +589,50 @@ def action_badge(s):
     if s<=-0.5:  return badge("bear","偏空觀察")
     return badge("neut","中性觀望")
 
+def _fmt_hover_num(v, digits=2):
+    try:
+        x = float(v)
+        if not np.isfinite(x):
+            return "—"
+        return f"{x:,.{digits}f}"
+    except Exception:
+        return "—"
+
+def _main_chart_hover_text(df, ind):
+    close = pd.to_numeric(df.get("Close"), errors="coerce")
+    prev = close.shift(1)
+    if len(close) > 0:
+        prev.iloc[0] = pd.to_numeric(df.get("Open"), errors="coerce").iloc[0]
+    change_pct = (close / prev.replace(0, np.nan) - 1.0) * 100
+    volume_lots = pd.to_numeric(df.get("Volume"), errors="coerce").fillna(0) / 1000.0
+    macd_line = pd.to_numeric(ind.get("macd_line", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    macd_signal = pd.to_numeric(ind.get("macd_signal", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    macd_hist = pd.to_numeric(ind.get("macd_hist", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    rsi14 = pd.to_numeric(ind.get("rsi14", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    bb_up = pd.to_numeric(ind.get("bb_up", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    bb_dn = pd.to_numeric(ind.get("bb_dn", pd.Series(index=df.index)), errors="coerce").reindex(df.index)
+    bb_pct = ((close - bb_dn) / (bb_up - bb_dn).replace(0, np.nan) * 100).clip(0, 100)
+
+    texts = []
+    for i, ts in enumerate(df.index):
+        pct = float(change_pct.iloc[i]) if pd.notna(change_pct.iloc[i]) else 0.0
+        arrow = "▲" if pct >= 0 else "▼"
+        texts.append(
+            f"日期　　{pd.to_datetime(ts).strftime('%Y/%m/%d')}<br>"
+            f"開　　　{_fmt_hover_num(df['Open'].iloc[i])}<br>"
+            f"最高　　{_fmt_hover_num(df['High'].iloc[i])}<br>"
+            f"最低　　{_fmt_hover_num(df['Low'].iloc[i])}<br>"
+            f"收盤　　{_fmt_hover_num(df['Close'].iloc[i])}　{arrow}{abs(pct):.2f}%<br>"
+            f"成交量　{volume_lots.iloc[i]:,.0f} 張<br>"
+            f"────────────<br>"
+            f"MACD　　{_fmt_hover_num(macd_line.iloc[i], 3)}<br>"
+            f"訊號線　{_fmt_hover_num(macd_signal.iloc[i], 3)}<br>"
+            f"柱狀圖　{_fmt_hover_num(macd_hist.iloc[i], 3)}<br>"
+            f"RSI　　 {_fmt_hover_num(rsi14.iloc[i], 1)}<br>"
+            f"布林帶　{_fmt_hover_num(bb_pct.iloc[i], 1)}%分位"
+        )
+    return texts
+
 # ── Chart builder ──────────────────────────────────────────────────────────
 def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
                 show_macd=True, show_rsi=True,
@@ -613,35 +657,50 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
 
     fig=make_subplots(rows=rows,cols=1,shared_xaxes=True,
         row_heights=heights,vertical_spacing=.02,subplot_titles=titles)
+    main_hover = _main_chart_hover_text(df, ind)
+    hover_label = dict(
+        bgcolor="rgba(21,24,39,0.96)" if D else "rgba(255,255,255,0.98)",
+        bordercolor=AC,
+        font=dict(color=TX, family="Microsoft JhengHei, Arial, sans-serif", size=12),
+        align="left",
+    )
 
     # ── Main price chart ──
     if style=="K棒":
         fig.add_trace(go.Candlestick(
             x=df.index,open=df["Open"],high=df["High"],
             low=df["Low"],close=df["Close"],
+            text=main_hover,hoverinfo="text",hoverlabel=hover_label,
             increasing_line_color=OK,decreasing_line_color=ER,
             name="K棒",showlegend=False),row=1,col=1)
     else:
         fig.add_trace(go.Scatter(x=df.index,y=df["Close"],mode="lines",
-            line=dict(color=AC,width=1.5),name="收盤"),row=1,col=1)
+            line=dict(color=AC,width=1.5),name="收盤",
+            text=main_hover,hovertemplate="%{text}<extra></extra>",
+            hoverlabel=hover_label),row=1,col=1)
 
     # MA lines (visibility controlled)
     if show_ma5:
         fig.add_trace(go.Scatter(x=df.index,y=ind["ma5"],
-            line=dict(color="rgba(108,142,245,0.8)",width=1),name="MA5"),row=1,col=1)
+            line=dict(color="rgba(108,142,245,0.8)",width=1),name="MA5",
+            hoverinfo="skip"),row=1,col=1)
     if show_ma20:
         fig.add_trace(go.Scatter(x=df.index,y=ind["ma20"],
-            line=dict(color="rgba(251,191,36,0.8)",width=1),name="MA20"),row=1,col=1)
+            line=dict(color="rgba(251,191,36,0.8)",width=1),name="MA20",
+            hoverinfo="skip"),row=1,col=1)
     if show_ma60:
         fig.add_trace(go.Scatter(x=df.index,y=ind["ma60"],
-            line=dict(color="rgba(248,113,113,0.8)",width=1),name="MA60"),row=1,col=1)
+            line=dict(color="rgba(248,113,113,0.8)",width=1),name="MA60",
+            hoverinfo="skip"),row=1,col=1)
 
     if bb:
         fig.add_trace(go.Scatter(x=df.index,y=ind["bb_up"],
-            line=dict(color="rgba(108,142,245,0.3)",width=1),name="BB上"),row=1,col=1)
+            line=dict(color="rgba(108,142,245,0.3)",width=1),name="BB上",
+            hoverinfo="skip"),row=1,col=1)
         fig.add_trace(go.Scatter(x=df.index,y=ind["bb_dn"],
             line=dict(color="rgba(108,142,245,0.3)",width=1),fill="tonexty",
-            fillcolor="rgba(108,142,245,0.06)",name="BB下"),row=1,col=1)
+            fillcolor="rgba(108,142,245,0.06)",name="BB下",
+            hoverinfo="skip"),row=1,col=1)
 
     if sr_on:
         fig.add_hline(y=sr["resistance_hi"],line_dash="dot",
@@ -654,15 +713,19 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
     fd=list(fc["future_dates"])
     if band:
         fig.add_trace(go.Scatter(x=fd,y=fc["upper"],
-            line=dict(color="rgba(0,0,0,0)",width=0),showlegend=False),row=1,col=1)
+            line=dict(color="rgba(0,0,0,0)",width=0),showlegend=False,
+            hoverinfo="skip"),row=1,col=1)
         fig.add_trace(go.Scatter(x=fd,y=fc["lower"],
             line=dict(color="rgba(0,0,0,0)",width=0),fill="tonexty",
-            fillcolor="rgba(167,139,250,0.12)",name="預測帶"),row=1,col=1)
+            fillcolor="rgba(167,139,250,0.12)",name="預測帶",
+            hoverinfo="skip"),row=1,col=1)
     fig.add_trace(go.Scatter(
         x=[df.index[-1]]+fd,
         y=[float(df["Close"].iloc[-1])]+list(fc["median"]),
         mode="lines",line=dict(color="#a78bfa",width=2,dash="dash"),
-        name="預測中位"),row=1,col=1)
+        name="預測中位",
+        hovertemplate="日期　%{x|%Y/%m/%d}<br>預測中位　%{y:,.2f}<extra></extra>",
+        hoverlabel=hover_label),row=1,col=1)
 
     # ── MACD ──
     macd_row=None
@@ -701,7 +764,7 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
             font=dict(size=10,color=CTX),x=0.01,y=0.99),
         xaxis_rangeslider_visible=False,
         margin=dict(l=0,r=0,t=30,b=0),
-        hovermode="x unified",
+        hovermode="closest",
         # Mobile/desktop friendly: user can switch between zoom and pan
         dragmode=dragmode,
     )
@@ -1824,11 +1887,15 @@ def show(r):
             out["predicted_return"]=out["predicted_return"]*100
             out["actual_return"]=out["actual_return"]*100
             out["hit"]=out["hit"].map({True:"命中",False:"未命中"})
-            if "segment" in out:
-                out["segment"]=out["segment"].map(_segment_label)
+            for col in list(out.columns):
+                if str(col).lower()=="segment":
+                    out[col]=out[col].map(_segment_label)
+                elif out[col].dtype == "object":
+                    out[col]=out[col].map(lambda v: _replace_segment_codes(str(v)) if isinstance(v, str) else v)
             st.dataframe(out.rename(columns={
                 "date":"日期",
                 "segment":"分段",
+                "Segment":"分段",
                 "predicted_return":"預測報酬(%)",
                 "actual_return":"實際報酬(%)",
                 "hit":"是否命中",
