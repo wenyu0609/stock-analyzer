@@ -62,14 +62,15 @@ SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEFAULT_WEIGHTS = {
-    # Balanced default: trend + model are primary; fundamentals/news/chips confirm; margin is a risk overlay.
-    "technical": 20,
-    "ml": 24,
-    "news": 12,
-    "fundamental": 14,
+    # Aligned with the desktop app. Desktop has a separate P/E slider; web folds
+    # P/E into the broader fundamental bucket so the visible weights still sum to 100.
+    "technical": 18,
+    "ml": 23,
+    "news": 10,
+    "fundamental": 18,
     "us_market": 10,
     "institutional": 15,
-    "margin": 5,
+    "margin": 6,
 }
 
 class StockAnalysisError(RuntimeError):
@@ -105,6 +106,7 @@ _QUICK_RECOMMEND_CACHE = {}
 _QUICK_RECOMMEND_CACHE_TTL = 1800  # 30 minutes
 _BAD_YF_SYMBOLS = {}
 _BAD_YF_SYMBOL_TTL = 6 * 3600
+_YAHOO_TW_SUMMARY_CACHE = {}
 
 TW_TZ = "Asia/Taipei"
 MARKET_OPEN = dtime(9, 0)
@@ -608,6 +610,90 @@ def _fetch_yahoo_tw_name(raw_code: str) -> str:
             continue
     return ""
 
+def _plain_text_from_html(html_text: str) -> str:
+    txt = str(html_text or "")
+    try:
+        txt = html.unescape(txt)
+    except Exception:
+        pass
+    txt = re.sub(r"<script[\s\S]*?</script>", " ", txt, flags=re.I)
+    txt = re.sub(r"<style[\s\S]*?</style>", " ", txt, flags=re.I)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"[\u3000\xa0]+", " ", txt)
+    txt = re.sub(r"\s+", " ", txt)
+    return txt.strip()
+
+def _safe_page_num(value):
+    try:
+        s = str(value or "").replace(",", "").replace("−", "-").strip()
+        if s in ("", "-", "--", "—", "nan", "None"):
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+def _fetch_yahoo_tw_quote_summary(raw_code: str) -> dict:
+    """Best-effort Yahoo Taiwan page parser for P/E, volume lots and amount."""
+    raw = _tw_code_key(raw_code)
+    if not raw or not REQUESTS_OK:
+        return {}
+    ck = ("yahoo_tw_summary", raw)
+    cached = _YAHOO_TW_SUMMARY_CACHE.get(ck)
+    if cached and time.time() - cached[0] < 600:
+        return dict(cached[1])
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept-Language": "zh-TW,zh;q=0.9",
+        "Cache-Control": "no-cache",
+    }
+    for suffix in ("TW", "TWO"):
+        url = f"https://tw.stock.yahoo.com/quote/{raw}.{suffix}"
+        try:
+            r = requests.get(url, headers=headers, timeout=8)
+            if r.status_code != 200 or not r.text:
+                continue
+            plain = _plain_text_from_html(r.text)
+            vol = None
+            for pat in (r"總量\s*([0-9,]+)", r"([0-9,]+)\s*成交量", r"成交量\(張\)\s*([0-9,]+)", r"成交量\s*([0-9,]+)"):
+                m = re.search(pat, plain)
+                if m:
+                    vol = _safe_page_num(m.group(1))
+                    if vol and vol > 0:
+                        break
+            amount = None
+            m_amt = re.search(r"成交金額\(億\)\s*([0-9,]+(?:\.[0-9]+)?)", plain)
+            if m_amt:
+                amount = _safe_page_num(m_amt.group(1))
+            pe = None
+            for pat in (
+                r"([0-9,]+(?:\.[0-9]+)?)\s*\([0-9,]+(?:\.[0-9]+)?\)\s*本益比",
+                r"本益比[^0-9]{0,20}([0-9,]+(?:\.[0-9]+)?)",
+                r"PE\s*Ratio[^0-9]{0,20}([0-9,]+(?:\.[0-9]+)?)",
+            ):
+                m = re.search(pat, plain, flags=re.I)
+                if m:
+                    pe = _safe_page_num(m.group(1))
+                    if pe and 0 < pe < 500:
+                        break
+            updated = ""
+            m_upd = re.search(r"(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2})\s*更新", plain)
+            if m_upd:
+                updated = m_upd.group(1)
+            if (pe and pe > 0) or (vol and vol > 0):
+                result = {
+                    "pe_ratio": float(pe) if pe else None,
+                    "volume_lots": float(vol) if vol else None,
+                    "amount_100m": amount,
+                    "updated": updated,
+                    "source": f"Yahoo奇摩台股 {raw}.{suffix}",
+                    "url": url,
+                }
+                _YAHOO_TW_SUMMARY_CACHE[ck] = (time.time(), dict(result))
+                return result
+        except Exception:
+            continue
+    return {}
+
 def resolve_tw_display_name(raw_code: str, ticker=None, symbol: str = "", prefer_cache: bool = True) -> str:
     code = _tw_code_key(raw_code or symbol)
     if not code:
@@ -986,21 +1072,17 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
         bbu = float(ind["bb_up"].iloc[-1]); bbd = float(ind["bb_dn"].iloc[-1])
         cl  = float(ind["ma5"].iloc[-1])
         mstd = float(ind["macd_hist"].std()) if len(ind["macd_hist"]) > 5 else 1.0
-        tech_sig += float(np.clip(mh / max(mstd, 1e-9), -1, 1)) * 0.45
-        tech_sig += float(np.clip((rsi - 50) / 50, -1, 1)) * 0.25
+        tech_sig += float(np.clip(mh / max(mstd, 1e-9), -1, 1)) * 0.50
+        tech_sig += float(np.clip((50 - rsi) / 50, -1, 1)) * (-0.30)
         bpos = (cl - bbd) / max(bbu - bbd, 1e-9)
-        tech_sig += float(np.clip((0.5 - abs(bpos - 0.5)) * 2, -1, 1)) * 0.15
-        if len(ind["ma5"]) and float(ind["ma5"].iloc[-1]) > float(ind["ma20"].iloc[-1]) > float(ind["ma60"].iloc[-1]):
-            tech_sig += 0.15
-        elif len(ind["ma5"]) and float(ind["ma5"].iloc[-1]) < float(ind["ma20"].iloc[-1]) < float(ind["ma60"].iloc[-1]):
-            tech_sig -= 0.15
+        tech_sig += float(np.clip((0.5 - bpos) * 2, -1, 1)) * 0.20
     except Exception:
         pass
     tech_sig = float(np.clip(tech_sig, -1, 1))
 
     gb_p = (ml_pred or {}).get("prob_up", 0.5)
     nn_p = (nn_pred or {}).get("prob_up", gb_p)
-    ml_sig = float(np.clip((gb_p * 0.55 + nn_p * 0.45 - 0.5) * 2, -1, 1))
+    ml_sig = float(np.clip((gb_p * 0.45 + nn_p * 0.55 - 0.5) * 2, -1, 1))
 
     lbl = (ns or {}).get("label", "中性")
     news_score = (ns or {}).get("score", None)
@@ -1010,12 +1092,21 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
         news_sig = float(np.clip(news_score, -1, 1))
 
     fs = 0.0
+    pe_sig = 0.0
     if fund:
+        pe = fund.get("pe_ratio")
+        try:
+            pe = float(pe or 0)
+            if 0 < pe <= 12: pe_sig = 0.85
+            elif pe <= 18: pe_sig = 0.45
+            elif pe <= 28: pe_sig = 0.10
+            elif pe <= 40: pe_sig = -0.25
+            elif pe > 40: pe_sig = -0.70
+        except Exception:
+            pe_sig = 0.0
         pe = fund.get("pe_ratio")
         roe = fund.get("roe")
         dy = fund.get("div_yield")
-        if pe and 0 < pe < 15: fs += 0.45
-        if pe and pe > 40: fs -= 0.45
         if roe and roe > 0.15: fs += 0.45
         if roe and roe < 0.05: fs -= 0.25
         if dy and dy > 0.04: fs += 0.15
@@ -1024,14 +1115,18 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
         if fund.get("earn_growth") is not None: fs += float(np.clip(fund.get("earn_growth", 0) / 0.40, -0.25, 0.30))
         if fund.get("company_event_score") is not None: fs += float(np.clip(fund.get("company_event_score", 0), -1, 1)) * 0.30
     fs = float(np.clip(fs, -1, 1))
+    # Desktop has fundamental 12% + P/E 6%. Web keeps one fundamental slider,
+    # so blend those two desktop signals in the same 2:1 ratio.
+    fs = float(np.clip(fs * (12 / 18) + pe_sig * (6 / 18), -1, 1))
 
     us_sig = (
-        np.clip(mkt_ctx.get("nasdaq_ret_1", 0.0) / 0.025, -1, 1) * 0.30 +
-        np.clip(mkt_ctx.get("sp500_ret_1", 0.0) / 0.020, -1, 1) * 0.20 +
-        np.clip(mkt_ctx.get("semis_ret_1", 0.0) / 0.030, -1, 1) * 0.25 +
-        np.clip(mkt_ctx.get("sox_ret_1", 0.0) / 0.030, -1, 1) * 0.10 +
-        np.clip(mkt_ctx.get("taiex_ret_1", 0.0) / 0.020, -1, 1) * 0.15
+        np.clip(mkt_ctx.get("nasdaq_ret_1", 0.0) / 0.030, -1, 1) * 0.25 +
+        np.clip(mkt_ctx.get("sp500_ret_1", 0.0) / 0.025, -1, 1) * 0.20 +
+        np.clip(mkt_ctx.get("semis_ret_1", 0.0) / 0.035, -1, 1) * 0.30 +
+        np.clip(mkt_ctx.get("taiex_ret_1", 0.0) / 0.025, -1, 1) * 0.25
     )
+    if mkt_ctx.get("vix", 20) > 28:
+        us_sig -= 0.20
     us_sig = float(np.clip(us_sig, -1, 1))
 
     inst_sig = float(np.clip(inst.get("inst_score", inst.get("inst_combo", 0.0)), -1, 1))
@@ -2128,6 +2223,19 @@ def run_analysis(symbol: str, lookback_years: int = 3,
                     if v is not None:
                         try: fund[lbl] = float(v)
                         except Exception: pass
+            except Exception:
+                pass
+            try:
+                q = _fetch_yahoo_tw_quote_summary(raw_code)
+                if q.get("pe_ratio") and 0 < float(q["pe_ratio"]) < 500:
+                    fund["pe_ratio"] = float(q["pe_ratio"])
+                    fund["pe_source"] = q.get("source", "Yahoo奇摩台股")
+                if q.get("volume_lots"):
+                    fund["yahoo_volume_lots"] = float(q["volume_lots"])
+                if q.get("amount_100m"):
+                    fund["yahoo_amount_100m"] = float(q["amount_100m"])
+                if q.get("updated"):
+                    fund["yahoo_updated"] = q.get("updated")
             except Exception:
                 pass
             return fund

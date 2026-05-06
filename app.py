@@ -81,7 +81,7 @@ if "_font_scale_widget" in st.session_state:
         pass
 
 
-WEIGHTS_VERSION = "2026-05-margin-multisource"
+WEIGHTS_VERSION = "2026-05-desktop-aligned"
 if st.session_state.get("_weights_version") != WEIGHTS_VERSION:
     st.session_state.weights = DEFAULT_WEIGHTS.copy()
     for _k in ("wt_s","wt_n","wm_s","wm_n","wn_s","wn_n","wf_s","wf_n","wu_s","wu_n","wi_s","wi_n","wg_s","wg_n"):
@@ -556,13 +556,22 @@ def calc_score(r):
     wn=w.get("news",DEFAULT_WEIGHTS["news"])/100;      wf=w.get("fundamental",DEFAULT_WEIGHTS["fundamental"])/100
     wu=w.get("us_market",DEFAULT_WEIGHTS["us_market"])/100; wi=w.get("institutional",DEFAULT_WEIGHTS["institutional"])/100
     wg=w.get("margin",DEFAULT_WEIGHTS["margin"])/100
+    diag=r.get("tech_diagnosis",{})
     try:
-        mh=float(ind["macd_hist"].iloc[-1]); rsi=float(ind["rsi14"].iloc[-1])
-        ms=float(ind["macd_hist"].std()) if len(ind["macd_hist"])>5 else 1.0
-        t=float(np.clip(mh/max(ms,1e-9),-1,1))*.55+float(np.clip((rsi-50)/50,-1,1))*.25
+        mh=float(ind["macd_hist"].iloc[-1]) if not pd.isna(ind["macd_hist"].iloc[-1]) else 0.0
+        rsi=float(ind["rsi14"].iloc[-1]) if not pd.isna(ind["rsi14"].iloc[-1]) else 50.0
+        t=float(diag.get("score",0.0) or 0.0)
+        if t==0.0:
+            last=float(r["df"]["Close"].iloc[-1]); prev=float(r["df"]["Close"].iloc[-2]) if len(r["df"])>1 else last
+            chg_pct=(last-prev)/max(prev,1e-9)*100
+            t=(1.0 if chg_pct>2 else(-1.0 if chg_pct<-2 else 0.0))
+            t+=(0.5 if mh>0 else(-0.5 if mh<0 else 0.0))
+            t+=(0.5 if rsi<30 else(-0.5 if rsi>70 else 0.0))
+            t=float(np.clip(t/2.0,-1,1))
     except Exception:
         t=0.0
-    ml_s=(ml.get("prob_up",.5)-.5)*2
+    nn_prob=r.get("nn_predict",{}).get("prob_up",ml.get("prob_up",.5))
+    ml_s=((ml.get("prob_up",.5)*0.45+nn_prob*0.55)-.5)*2
     ns_s=ns.get("score", None)
     if ns_s is None:
         ns_s=.6 if ns.get("label") in ("正面","偏正面") else(-.6 if ns.get("label") in ("負面","偏負面") else 0.)
@@ -570,23 +579,25 @@ def calc_score(r):
     if fund.get("pe_ratio") and 0<fund["pe_ratio"]<15: fs+=.5
     if fund.get("pe_ratio") and fund["pe_ratio"]>40:   fs-=.5
     if fund.get("roe") and fund["roe"]>.15: fs+=.5
+    fs=float(np.clip(fs,-1,1))
     mkt=r.get("mkt_ctx",{})
-    us_s=float(np.clip(mkt.get("nasdaq_ret_1",0)/.025,-1,1)*.3+
-               np.clip(mkt.get("sp500_ret_1",0)/.02,-1,1)*.2+
-               np.clip(mkt.get("semis_ret_1",0)/.03,-1,1)*.35+
-               np.clip(mkt.get("sox_ret_1",0)/.03,-1,1)*.15)
-    inst_s=r.get("institutional",{}).get("inst_score",0.0)
-    margin_s=r.get("margin",{}).get("margin_score",0.0)
-    ret_s=float(np.clip(r.get("return_prediction",{}).get("expected_return",0.0)/0.12,-1,1))
+    us_s=float(np.clip(
+        np.clip(mkt.get("nasdaq_ret_1",0)/.03,-1,1)*.25+
+        np.clip(mkt.get("sp500_ret_1",0)/.025,-1,1)*.20+
+        np.clip(mkt.get("semis_ret_1",0)/.035,-1,1)*.30+
+        np.clip(mkt.get("taiex_ret_1",0)/.025,-1,1)*.25,
+        -1,1))
+    inst_s=float(np.clip(r.get("institutional",{}).get("inst_score",0.0),-1,1))
+    margin_s=float(np.clip(r.get("margin",{}).get("margin_score",0.0),-1,1))
     return float(np.clip(
-        t*wt*1.8+(ml_s*0.7+ret_s*0.3)*wm*2+ns_s*wn*2+fs*wf*2+us_s*wu*2+inst_s*wi*2+margin_s*wg*2,
+        (t*wt+ml_s*wm+ns_s*wn+fs*wf+us_s*wu+inst_s*wi+margin_s*wg)*4,
         -4,4))
 
 def action_badge(s):
-    if s>=1.5:   return badge("bull","偏多·可試單")
-    if s>=0.5:   return badge("bull","偏多觀察")
-    if s<=-1.5:  return badge("bear","偏空·減碼")
-    if s<=-0.5:  return badge("bear","偏空觀察")
+    if s>=2:   return badge("bull","偏多·可試單")
+    if s>=1:   return badge("bull","偏多觀察")
+    if s<=-2:  return badge("bear","偏空·減碼")
+    if s<=-1:  return badge("bear","偏空觀察")
     return badge("neut","中性觀望")
 
 def _fmt_hover_num(v, digits=2):
@@ -638,8 +649,21 @@ def build_chart(r, style="K棒", bb=True, sr_on=True, band=True,
                 show_macd=True, show_rsi=True,
                 show_ma5=True, show_ma20=True, show_ma60=True,
                 dragmode="zoom"):
-    df=r["df"]; ind=r["indicators"]; sr=r["sr"]; fc=r["forecast"]
+    df_full=r["df"]; ind_full=r["indicators"]; sr=r["sr"]; fc=r["forecast"]
     name=r["name"]; sym=r["symbol"]
+    try:
+        chart_start = pd.to_datetime(df_full.index.max()) - pd.DateOffset(years=1)
+        df = df_full[df_full.index >= chart_start].copy()
+        if df.empty:
+            df = df_full.tail(252).copy()
+    except Exception:
+        df = df_full.tail(252).copy()
+    ind = {}
+    for k, v in (ind_full or {}).items():
+        if isinstance(v, pd.Series):
+            ind[k] = v.reindex(df.index)
+        else:
+            ind[k] = v
 
     # Dynamic row layout based on which subcharts are visible
     if show_macd and show_rsi:
@@ -928,8 +952,12 @@ def sidebar():
         with st.expander("分析參數",expanded=False):
             _fd_prev = st.session_state.forecast_days
             _ly_prev = st.session_state.lookback_years
-            st.session_state.forecast_days =st.slider("預測天數",5,90,st.session_state.forecast_days)
-            st.session_state.lookback_years=st.slider("回溯年數",1,10,st.session_state.lookback_years)
+            st.session_state.forecast_days = int(st.number_input(
+                "預測天數", min_value=1, value=int(st.session_state.forecast_days), step=1,
+                help="可自行輸入，不設定上限；數字越大，預測運算時間越長。"))
+            st.session_state.lookback_years = int(st.number_input(
+                "回溯年數", min_value=1, value=int(st.session_state.lookback_years), step=1,
+                help="可自行輸入，不設定上限；主圖仍只顯示最近一年，完整資料會用於訓練與回測。"))
             st.session_state.train_ratio   =st.slider("ML訓練佔比",.5,.95,st.session_state.train_ratio,.05)
             st.session_state.intraday_auto_refresh = st.checkbox(
                 "盤中走向 10 秒自動更新",
@@ -1702,16 +1730,31 @@ def show(r):
         _render_tech(r,df,ind,fc,ml_p,bt,last,med,fc_c,rsi_v)
 
     with t3:
-        if fund:
-            a,b=st.columns(2)
-            items_f=[("本益比P/E","pe_ratio",lambda v:f"{v:.1f}x"),
-                   ("EPS","eps",lambda v:f"{v:.2f}"),
-                   ("ROE","roe",lambda v:f"{v*100:.1f}%"),
-                   ("殖利率","div_yield",lambda v:f"{v*100:.2f}%"),
-                   ("市值","market_cap",lambda v:f"{v/1e9:.1f}B" if v>1e9 else f"{v/1e6:.0f}M")]
-            for i,(l,k,f) in enumerate(items_f):
-                if k in fund: (a if i%2==0 else b).metric(l,f(fund[k]))
-        else: st.info("無基本面資料（ETF 或資料不足）")
+        a,b=st.columns(2)
+        items_f=[("本益比 P/E","pe_ratio",lambda v:f"{v:.1f}x"),
+               ("EPS","eps",lambda v:f"{v:.2f}"),
+               ("ROE","roe",lambda v:f"{v*100:.1f}%"),
+               ("殖利率","div_yield",lambda v:f"{v*100:.2f}%"),
+               ("市值","market_cap",lambda v:f"{v/1e9:.1f}B" if v>1e9 else f"{v/1e6:.0f}M"),
+               ("營收成長","rev_growth",lambda v:f"{v*100:+.1f}%"),
+               ("獲利成長","earn_growth",lambda v:f"{v*100:+.1f}%"),
+               ("成交量","yahoo_volume_lots",lambda v:f"{v:,.0f} 張"),
+               ("成交金額","yahoo_amount_100m",lambda v:f"{v:,.2f} 億")]
+        shown=0
+        for i,(l,k,f) in enumerate(items_f):
+            v=fund.get(k) if isinstance(fund,dict) else None
+            if v is not None and str(v) not in ("", "nan", "None"):
+                try:
+                    (a if shown%2==0 else b).metric(l,f(float(v)))
+                    shown+=1
+                except Exception:
+                    pass
+        if isinstance(fund,dict) and fund.get("company_event_score") is not None:
+            st.caption(f"公司動能/新聞事件分數：{float(fund.get('company_event_score',0)):+.2f}")
+        if isinstance(fund,dict) and fund.get("pe_source"):
+            st.caption(f"P/E 來源：{fund.get('pe_source')}" + (f"；更新：{fund.get('yahoo_updated')}" if fund.get("yahoo_updated") else ""))
+        if shown==0:
+            st.info("目前資料源沒有提供可用的基本面欄位；若是 ETF、KY、新上市股票或 Yahoo 暫時缺資料，會只保留新聞事件分數供模型參考。")
 
     with t4:
         if news:
