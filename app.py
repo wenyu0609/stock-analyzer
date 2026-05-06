@@ -600,6 +600,18 @@ def action_badge(s):
     if s<=-1:  return badge("bear","偏空觀察")
     return badge("neut","中性觀望")
 
+def _inst_to_lots(value):
+    try:
+        x = float(value or 0)
+        # Desktop backend stores institutional flow in million shares (M).
+        # Older web cache may still contain raw shares, so normalize both.
+        return x / 1000.0 if abs(x) > 100000 else x * 1000.0
+    except Exception:
+        return 0.0
+
+def _fmt_inst_lots(value):
+    return f"{_inst_to_lots(value):+,.0f} 張"
+
 def _fmt_hover_num(v, digits=2):
     try:
         x = float(v)
@@ -1516,7 +1528,7 @@ def render_daily_recommendations():
                 f"<div class='metric-card' style='border-color:{border}'>"
                 f"<div class='lbl'>Top {i} · 綜合分數 {it['score']:+.2f}</div>"
                 f"<div class='val'>{it['name']} <span style='font-size:.9rem;color:{DM}'>({it['code']})</span></div>"
-                f"<div class='sub'>現價 {it['last']:.2f}｜20日預測 {it['forecast_pct']:+.1f}%｜ML {it['ml_prob']:.0f}%｜法人 {it['inst_total']/1000:,.0f} 張</div>"
+                f"<div class='sub'>現價 {it['last']:.2f}｜20日預測 {it['forecast_pct']:+.1f}%｜ML {it['ml_prob']:.0f}%｜法人 {_fmt_inst_lots(it['inst_total'])}</div>"
                 f"<p style='color:{TX};margin:.4rem 0 0'>推薦原因：{it['reason']}</p>"
                 f"</div>",
                 unsafe_allow_html=True)
@@ -1792,12 +1804,16 @@ def show(r):
         mkt=r.get("mkt_ctx",{})
         st.markdown("**台股籌碼**")
         c1,c2,c3,c4=st.columns(4)
-        c1.metric("外資買賣超",f"{inst.get('foreign_net',0)/1000:,.0f} 張")
-        c2.metric("投信買賣超",f"{inst.get('trust_net',0)/1000:,.0f} 張")
-        c3.metric("自營商買賣超",f"{inst.get('dealer_net',0)/1000:,.0f} 張")
-        c4.metric("三大法人合計",f"{inst.get('total_net',0)/1000:,.0f} 張",
-                  delta=f"score {inst.get('inst_score',0):+.2f}")
+        has_inst = str(inst.get("source","N/A")) not in ("", "N/A") and any(
+            abs(float(inst.get(k,0) or 0)) > 1e-9 for k in ("foreign_net","trust_net","dealer_net","total_net"))
+        c1.metric("外資買賣超",_fmt_inst_lots(inst.get('foreign_net',0)) if has_inst else "無有效資料")
+        c2.metric("投信買賣超",_fmt_inst_lots(inst.get('trust_net',0)) if has_inst else "無有效資料")
+        c3.metric("自營商買賣超",_fmt_inst_lots(inst.get('dealer_net',0)) if has_inst else "無有效資料")
+        c4.metric("三大法人合計",_fmt_inst_lots(inst.get('total_net',0)) if has_inst else "無有效資料",
+                  delta=f"score {inst.get('inst_score',0):+.2f}" if has_inst else None)
         st.caption(f"資料來源：{inst.get('source','N/A')}｜日期：{inst.get('date','—')}")
+        if inst.get("note") and not has_inst:
+            st.warning(inst.get("note"))
         st.markdown("**融資融券**")
         m1,m2,m3,m4=st.columns(4)
         m1.metric("融資餘額",f"{margin.get('margin_balance',0):,.0f} 張")

@@ -107,6 +107,12 @@ _QUICK_RECOMMEND_CACHE_TTL = 1800  # 30 minutes
 _BAD_YF_SYMBOLS = {}
 _BAD_YF_SYMBOL_TTL = 6 * 3600
 _YAHOO_TW_SUMMARY_CACHE = {}
+_YF_RETURN_CACHE = {}
+_YF_RETURN_CACHE_TTL = 1800
+_MARKET_CONTEXT_CACHE = {}
+_MARKET_CONTEXT_CACHE_TTL = 1800
+_INSTITUTIONAL_CACHE = {}
+_INSTITUTIONAL_CACHE_TTL = 1800
 
 TW_TZ = "Asia/Taipei"
 MARKET_OPEN = dtime(9, 0)
@@ -181,6 +187,122 @@ def _json_row_sets(payload):
                 rows = t.get("data") or t.get("rows")
                 if isinstance(rows, list) and rows:
                     yield rows
+
+def _find_field_index(fields, aliases):
+    norm = [re.sub(r"\s+", "", str(f)) for f in (fields or [])]
+    for alias in aliases:
+        if isinstance(alias, (tuple, list)):
+            for i, f in enumerate(norm):
+                if all(str(a) in f for a in alias):
+                    return i
+        else:
+            a = re.sub(r"\s+", "", str(alias))
+            for i, f in enumerate(norm):
+                if a == f or a in f:
+                    return i
+    return None
+
+def _get_by_fields(row, fields, aliases, default=0.0):
+    if isinstance(row, dict):
+        for alias in aliases:
+            if isinstance(alias, (tuple, list)):
+                for k, v in row.items():
+                    kk = re.sub(r"\s+", "", str(k))
+                    if all(str(a) in kk for a in alias):
+                        return _safe_float(v)
+            else:
+                for k in (alias, str(alias).replace(" ", "")):
+                    if k in row:
+                        return _safe_float(row.get(k))
+                a = re.sub(r"\s+", "", str(alias))
+                for k, v in row.items():
+                    kk = re.sub(r"\s+", "", str(k))
+                    if a == kk or a in kk:
+                        return _safe_float(v)
+        return default
+    idx = _find_field_index(fields, aliases)
+    if idx is not None and idx < len(row):
+        return _safe_float(row[idx])
+    return default
+
+def _iter_rows_with_fields(payload):
+    if isinstance(payload, list):
+        yield [], payload
+        return
+    if not isinstance(payload, dict):
+        return
+    for key in ("data", "data1", "data2", "aaData", "items"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and rows:
+            fields = payload.get("fields") or payload.get("fields1") or payload.get("titles") or []
+            yield fields, rows
+    tables = payload.get("tables")
+    if isinstance(tables, list):
+        for t in tables:
+            if isinstance(t, dict):
+                rows = t.get("data") or t.get("rows")
+                fields = t.get("fields") or t.get("headers") or t.get("title") or []
+                if isinstance(rows, list) and rows:
+                    yield fields, rows
+
+def _format_tw_date(date):
+    date = str(date or "")
+    if len(date) == 8 and date.isdigit():
+        return f"{date[:4]}-{date[4:6]}-{date[6:]}"
+    return date
+
+def _make_inst_result(date, foreign, trust, dealer, total, source, note=""):
+    foreign_raw = _safe_float(foreign)
+    trust_raw = _safe_float(trust)
+    dealer_raw = _safe_float(dealer)
+    total_raw = _safe_float(total) if total not in (None, "") else foreign_raw + trust_raw + dealer_raw
+    score = float(np.clip(total_raw / 20000000.0, -1, 1))
+    return {
+        "date": _format_tw_date(date),
+        "foreign_net": foreign_raw / 1e6,
+        "trust_net": trust_raw / 1e6,
+        "dealer_net": dealer_raw / 1e6,
+        "total_net": total_raw / 1e6,
+        "inst_score": score,
+        "inst_combo": score,
+        "source": source,
+        "note": note,
+    }
+
+def _looks_like_valid_inst(inst):
+    return bool(inst) and inst.get("source") not in ("", "N/A") and any(
+        abs(float(inst.get(k, 0) or 0)) > 1e-9
+        for k in ("foreign_net", "trust_net", "dealer_net", "total_net")
+    )
+
+def _inst_value_to_lots(value):
+    x = _safe_float(value)
+    return x / 1000.0 if abs(x) > 100000 else x * 1000.0
+
+def _parse_inst_row(row, fields, raw_code, date, source):
+    if isinstance(row, dict):
+        code = str(row.get("證券代號") or row.get("股票代號") or row.get("Code") or row.get("SecuritiesCode") or row.get("代號") or "").strip()
+    else:
+        code = str(row[0]).strip() if row else ""
+    if code != raw_code:
+        return None
+    foreign = _get_by_fields(row, fields, ["外陸資買賣超股數(不含外資自營商)", "外資買賣超股數", "外陸資買賣超股數", ("外", "買賣超")])
+    trust = _get_by_fields(row, fields, ["投信買賣超股數", ("投信", "買賣超")])
+    dealer = _get_by_fields(row, fields, ["自營商買賣超股數", ("自營商", "買賣超")])
+    total = _get_by_fields(row, fields, ["三大法人買賣超股數", ("三大法人", "買賣超"), "合計買賣超股數"])
+    if not any((foreign, trust, dealer, total)) and not isinstance(row, dict):
+        vals = list(row)
+        if len(vals) >= 17:
+            foreign = _safe_float(vals[4])
+            trust = _safe_float(vals[10])
+            dealer = _safe_float(vals[11])
+            total = _safe_float(vals[16])
+        elif len(vals) >= 12:
+            foreign = _safe_float(vals[4])
+            trust = _safe_float(vals[7])
+            dealer = _safe_float(vals[10])
+            total = _safe_float(vals[11])
+    return _make_inst_result(date, foreign, trust, dealer, total, source)
 
 def _extract_twse_margin_row(row):
     """Parse one TWSE MI_MARGN row into margin/short fields."""
@@ -1145,16 +1267,21 @@ def compute_drift_bias(ind, ml_pred, nn_pred, ns, fund, weights,
     return composite * 0.003
 
 def simple_forecast(df, days=30, n_paths=150, lower_pct=15, upper_pct=85, drift_bias=0.0):
-    close = df["Close"].values
+    close = pd.to_numeric(df["Close"], errors="coerce").dropna().values
     if len(close) < 30: raise RuntimeError("歷史資料不足")
     rets = np.diff(np.log(close))
-    mu   = float(np.mean(rets)) + drift_bias
-    sig  = float(np.std(rets))
+    recent = rets[-252:] if len(rets) >= 60 else rets
+    weights = np.linspace(0.35, 1.0, len(recent))
+    mu   = float(np.average(recent, weights=weights)) + drift_bias
+    sig  = float(np.std(recent))
     if not np.isfinite(sig) or sig <= 0: sig = 0.01
+    sig = float(np.clip(sig, 0.003, 0.06))
+    mu = float(np.clip(mu, -0.012, 0.012))
     last_price = float(close[-1])
     rng    = np.random.default_rng(seed=42)
     shocks = rng.normal(mu, sig, (n_paths, days))
-    paths  = last_price * np.exp(np.cumsum(shocks, axis=1))
+    return_paths = np.exp(np.cumsum(shocks, axis=1)) - 1.0
+    paths  = last_price * (1.0 + return_paths)
     last_date    = df.index[-1]
     future_dates = pd.bdate_range(start=last_date+pd.Timedelta(days=1), periods=days)
     return {
@@ -1163,6 +1290,7 @@ def simple_forecast(df, days=30, n_paths=150, lower_pct=15, upper_pct=85, drift_
         "lower":   np.percentile(paths, lower_pct, axis=0),
         "upper":   np.percentile(paths, upper_pct, axis=0),
         "paths":   paths,
+        "return_paths": return_paths,
         "drift_bias": drift_bias,
     }
 
@@ -1499,6 +1627,10 @@ except ImportError:
 def _yf_return(ticker: str, period: str = "10d") -> dict:
     out = {"ret_1": 0.0, "ret_5": 0.0, "last": None}
     if not YF_OK: return out
+    ck = (ticker, period)
+    cached = _YF_RETURN_CACHE.get(ck)
+    if cached and time.time() - cached[0] < _YF_RETURN_CACHE_TTL:
+        return dict(cached[1])
     try:
         df = _yf_history_with_retry(yf.Ticker(ticker), period)
         if df is None or len(df) < 2: return out
@@ -1509,10 +1641,15 @@ def _yf_return(ticker: str, period: str = "10d") -> dict:
             out["ret_5"] = float(c.iloc[-1] / c.iloc[-6] - 1)
     except Exception:
         pass
+    _YF_RETURN_CACHE[ck] = (time.time(), dict(out))
     return out
 
 def fetch_market_context() -> dict:
     """Fetch TAIEX, VIX, US indices, SMH ETF and Philadelphia Semiconductor Index (^SOX)."""
+    ck = pd.Timestamp.now(tz=TW_TZ).strftime("%Y-%m-%d:%H")
+    cached = _MARKET_CONTEXT_CACHE.get(ck)
+    if cached and time.time() - cached[0] < _MARKET_CONTEXT_CACHE_TTL:
+        return dict(cached[1])
     ctx = {
         "taiex_ret_1":0.0, "taiex_ret_5":0.0, "taiex_vol":0.01,
         "vix":20.0, "usd_twd":31.5,
@@ -1524,29 +1661,33 @@ def fetch_market_context() -> dict:
         "sox_last":None,
     }
     if not YF_OK: return ctx
-    try:
-        tw = _yf_history_with_retry(yf.Ticker("^TWII"), "20d")
-        if tw is not None and len(tw) >= 6:
-            c = tw["Close"].astype(float)
-            ctx["taiex_ret_1"] = float(c.iloc[-1]/c.iloc[-2]-1)
-            ctx["taiex_ret_5"] = float(c.iloc[-1]/c.iloc[-6]-1)
-            ctx["taiex_vol"] = float(c.pct_change().dropna().tail(5).std())
-    except Exception:
-        pass
-    try:
-        vix = _yf_return("^VIX", "5d")
-        if vix.get("last"): ctx["vix"] = float(vix["last"])
-    except Exception:
-        pass
-    try:
-        fx = _yf_return("TWD=X", "5d")
-        if fx.get("last"): ctx["usd_twd"] = float(fx["last"])
-    except Exception:
-        pass
-    ndq = _yf_return("^IXIC", "10d")
-    spx = _yf_return("^GSPC", "10d")
-    smh = _yf_return("SMH", "10d")
-    sox = _yf_return("^SOX", "10d")
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {
+            "twii": ex.submit(_yf_history_with_retry, yf.Ticker("^TWII"), "20d"),
+            "vix": ex.submit(_yf_return, "^VIX", "5d"),
+            "fx": ex.submit(_yf_return, "TWD=X", "5d"),
+            "ndq": ex.submit(_yf_return, "^IXIC", "10d"),
+            "spx": ex.submit(_yf_return, "^GSPC", "10d"),
+            "smh": ex.submit(_yf_return, "SMH", "10d"),
+            "sox": ex.submit(_yf_return, "^SOX", "10d"),
+        }
+        try:
+            tw = futs["twii"].result(timeout=12)
+            if tw is not None and len(tw) >= 6:
+                c = tw["Close"].astype(float)
+                ctx["taiex_ret_1"] = float(c.iloc[-1]/c.iloc[-2]-1)
+                ctx["taiex_ret_5"] = float(c.iloc[-1]/c.iloc[-6]-1)
+                ctx["taiex_vol"] = float(c.pct_change().dropna().tail(5).std())
+        except Exception:
+            pass
+        vix = futs["vix"].result()
+        fx = futs["fx"].result()
+        ndq = futs["ndq"].result()
+        spx = futs["spx"].result()
+        smh = futs["smh"].result()
+        sox = futs["sox"].result()
+    if vix.get("last"): ctx["vix"] = float(vix["last"])
+    if fx.get("last"): ctx["usd_twd"] = float(fx["last"])
     semi_1 = [x for x in (smh["ret_1"], sox["ret_1"]) if abs(x) > 1e-12]
     semi_5 = [x for x in (smh["ret_5"], sox["ret_5"]) if abs(x) > 1e-12]
     ctx.update({
@@ -1557,38 +1698,57 @@ def fetch_market_context() -> dict:
         "semis_ret_1": float(np.mean(semi_1)) if semi_1 else smh["ret_1"],
         "semis_ret_5": float(np.mean(semi_5)) if semi_5 else smh["ret_5"],
     })
+    _MARKET_CONTEXT_CACHE[ck] = (time.time(), dict(ctx))
     return ctx
 
 def fetch_institutional_flow(raw_code: str) -> dict:
-    """Fetch latest TWSE/TPEX institutional flow. Best-effort, no hard failure."""
+    """Fetch latest institutional flow using the same parser as the desktop app."""
+    raw_code = str(raw_code or "").strip()
+    ck = (pd.Timestamp.now(tz=TW_TZ).strftime("%Y%m%d"), raw_code)
+    cached = _INSTITUTIONAL_CACHE.get(ck)
+    if cached and time.time() - cached[0] < _INSTITUTIONAL_CACHE_TTL:
+        return dict(cached[1])
     result = {
         "date": "", "foreign_net":0.0, "trust_net":0.0, "dealer_net":0.0,
-        "total_net":0.0, "inst_score":0.0, "source":"N/A",
+        "total_net":0.0, "inst_score":0.0, "inst_combo":0.0, "source":"N/A",
+        "note":"查無三大法人買賣超有效資料；可能為資料尚未公布、非普通股/ETF、上櫃格式變更或來源暫時阻擋。",
     }
     if not REQUESTS_OK: return result
-    # TWSE T86; loop recent calendar days to survive holidays.
-    for date in _tw_date_candidates(12):
+    for date in _tw_date_candidates(18):
+        for sel in ("ALLBUT0999", "ALL"):
+            try:
+                url = f"https://www.twse.com.tw/fund/T86?response=json&date={date}&selectType={sel}"
+                r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
+                if r.status_code != 200:
+                    continue
+                payload = r.json() or {}
+                for fields, rows in _iter_rows_with_fields(payload):
+                    for row in rows:
+                        inst = _parse_inst_row(row, fields, raw_code, date, f"TWSE:{sel}")
+                        if _looks_like_valid_inst(inst):
+                            _INSTITUTIONAL_CACHE[ck] = (time.time(), dict(inst))
+                            return inst
+            except Exception:
+                continue
+    for url in (
+        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_three_institutional_investors_buy_sell",
+        "https://www.tpex.org.tw/openapi/v1/tpex_three_institutional_investors_buy_sell",
+        "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_perday_trading_institution",
+    ):
         try:
-            url = f"https://www.twse.com.tw/fund/T86?response=json&date={date}&selectType=ALLBUT0999"
-            r = requests.get(url, timeout=7, headers={"User-Agent":"Mozilla/5.0"}, verify=False)
-            if r.status_code != 200: continue
-            rows = (r.json() or {}).get("data", [])
-            for row in rows:
-                if not row or str(row[0]).strip() != raw_code: continue
-                foreign = _safe_float(row[4]) if len(row) > 4 else 0.0
-                trust   = _safe_float(row[7]) if len(row) > 7 else 0.0
-                dealer  = _safe_float(row[10]) if len(row) > 10 else 0.0
-                total   = _safe_float(row[11]) if len(row) > 11 else foreign + trust + dealer
-                # shares -> thousand shares-ish signal, saturated
-                score = float(np.clip(total / 20000000.0, -1, 1))
-                return {
-                    "date": date, "foreign_net": foreign, "trust_net": trust,
-                    "dealer_net": dealer, "total_net": total,
-                    "inst_score": score, "inst_combo": score, "source":"TWSE",
-                }
+            r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"}, verify=False)
+            if r.status_code != 200:
+                continue
+            payload = r.json() or []
+            for fields, rows in _iter_rows_with_fields(payload):
+                for row in rows:
+                    inst = _parse_inst_row(row, fields, raw_code, "latest", "TPEX")
+                    if _looks_like_valid_inst(inst):
+                        _INSTITUTIONAL_CACHE[ck] = (time.time(), dict(inst))
+                        return inst
         except Exception:
             continue
-    # TPEX fallback is structurally different and changes over time; keep safe zero if not found.
+    _INSTITUTIONAL_CACHE[ck] = (time.time(), dict(result))
     return result
 
 def fetch_margin_balance(raw_code: str) -> dict:
@@ -2210,21 +2370,6 @@ def run_analysis(symbol: str, lookback_years: int = 3,
             return items, news_sentiment(items)
         def _do_fund():
             fund = {}
-            if not YF_OK: return fund
-            try:
-                info = yf.Ticker(sym).info or {}
-                for k, lbl in [("trailingPE","pe_ratio"),("trailingEps","eps"),
-                               ("returnOnEquity","roe"),("dividendYield","div_yield"),
-                               ("marketCap","market_cap"),("revenueGrowth","rev_growth"),
-                               ("earningsGrowth","earn_growth"),("totalRevenue","total_revenue"),
-                               ("revenuePerShare","rev_per_share"),("profitMargins","profit_margin"),
-                               ("grossMargins","gross_margin")]:
-                    v = info.get(k)
-                    if v is not None:
-                        try: fund[lbl] = float(v)
-                        except Exception: pass
-            except Exception:
-                pass
             try:
                 q = _fetch_yahoo_tw_quote_summary(raw_code)
                 if q.get("pe_ratio") and 0 < float(q["pe_ratio"]) < 500:
@@ -2238,6 +2383,24 @@ def run_analysis(symbol: str, lookback_years: int = 3,
                     fund["yahoo_updated"] = q.get("updated")
             except Exception:
                 pass
+            # yfinance info is slow and often empty for Taiwan stocks. Use it only
+            # when the fast Yahoo Taiwan page did not provide P/E, or for non-TW symbols.
+            is_tw_symbol = bool(re.fullmatch(r"\d{4,6}[A-Z]?", raw_code or ""))
+            if YF_OK and (not is_tw_symbol or "pe_ratio" not in fund):
+                try:
+                    info = yf.Ticker(sym).info or {}
+                    for k, lbl in [("trailingPE","pe_ratio"),("trailingEps","eps"),
+                                   ("returnOnEquity","roe"),("dividendYield","div_yield"),
+                                   ("marketCap","market_cap"),("revenueGrowth","rev_growth"),
+                                   ("earningsGrowth","earn_growth"),("totalRevenue","total_revenue"),
+                                   ("revenuePerShare","rev_per_share"),("profitMargins","profit_margin"),
+                                   ("grossMargins","gross_margin")]:
+                        v = info.get(k)
+                        if v is not None and lbl not in fund:
+                            try: fund[lbl] = float(v)
+                            except Exception: pass
+                except Exception:
+                    pass
             return fund
 
         with ThreadPoolExecutor(max_workers=5) as ex:
@@ -2271,8 +2434,7 @@ def run_analysis(symbol: str, lookback_years: int = 3,
         # 6. Forecast
         _prog(6, TOTAL, "Monte-Carlo 趨勢預測（由報酬率模型校準）…")
         drift = compute_drift_bias(ind, ml_pred, {}, ns, fund, weights, mkt_ctx, inst, margin)
-        fc = simple_forecast(df, days=forecast_days, n_paths=180, drift_bias=drift)
-        fc = align_forecast_with_return_model(fc, df, return_pred)
+        fc = simple_forecast(df, days=forecast_days, n_paths=120, lower_pct=15, upper_pct=85, drift_bias=drift)
 
         # 7. Backtests
         _prog(7, TOTAL, "回測與 MACD 黃金交叉策略…")
@@ -2286,7 +2448,11 @@ def run_analysis(symbol: str, lookback_years: int = 3,
         # UI also has its own rich rendering; core provides stable text.
         reason_lines = [
             diag["text"],
-            f"三大法人：合計買賣超 {inst.get('total_net',0)/1000:,.0f} 張，分數 {inst.get('inst_score',0):+.2f}。",
+            (
+                f"三大法人：合計買賣超 {_inst_value_to_lots(inst.get('total_net',0)):,.0f} 張，分數 {inst.get('inst_score',0):+.2f}。"
+                if _looks_like_valid_inst(inst) else
+                f"三大法人：尚未取得有效資料（{inst.get('note','來源無資料')}）。"
+            ),
             f"融資融券：融資變化 {margin.get('margin_change',0):,.0f} 張、融券變化 {margin.get('short_change',0):,.0f} 張，分數 {margin.get('margin_score',0):+.2f}。",
             f"美股背景：NASDAQ {mkt_ctx.get('nasdaq_ret_1',0)*100:+.2f}%、S&P500 {mkt_ctx.get('sp500_ret_1',0)*100:+.2f}%、SMH {mkt_ctx.get('smh_ret_1',mkt_ctx.get('semis_ret_1',0))*100:+.2f}%、費半SOX {mkt_ctx.get('sox_ret_1',0)*100:+.2f}%。",
             f"新聞情緒：{ns.get('label','中性')}（正面 {ns.get('positive_ct',0)} / 負面 {ns.get('negative_ct',0)}）。",
