@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import warnings, io, time
+import warnings, io, time, re
 from datetime import datetime
 
 try:
@@ -49,7 +49,7 @@ from core import (
     simulate_macd_cross_strategy, recommend_top_volume_stocks,
     friendly_error_message, DEFAULT_WEIGHTS,
     _cjk, SKLEARN_OK, XGB_OK, TORCH_OK, YF_OK,
-    get_intraday_analysis, read_marketdata_key,
+    get_intraday_analysis, read_marketdata_key, segment_to_zh,
 )
 
 # ── Session state ──────────────────────────────────────────────────────────
@@ -512,6 +512,28 @@ def _return_model_label(name: str) -> str:
         "return_global": "全市場報酬率模型",
         "return_segment_blend": "分段融合報酬率模型",
     }.get(str(name or ""), str(name or "—"))
+
+def _segment_label(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or text == "—":
+        return "—"
+    if "_" not in text:
+        return text
+    try:
+        return segment_to_zh(text)
+    except Exception:
+        phase_map = {"early":"月初", "mid":"月中", "late":"月末"}
+        trend_map = {"up":"多頭", "down":"空頭", "side":"盤整"}
+        vol_map = {"normalvol":"正常波動", "highvol":"高波動"}
+        p = text.split("_")
+        if len(p) >= 3:
+            return f"{phase_map.get(p[0],p[0])}｜{trend_map.get(p[1],p[1])}｜{vol_map.get(p[2],p[2])}"
+        return text
+
+def _replace_segment_codes(text: str) -> str:
+    def repl(m):
+        return _segment_label(m.group(0))
+    return re.sub(r"\b(?:early|mid|late)_(?:up|down|side)_(?:normalvol|highvol)\b", repl, str(text or ""))
 
 def _streamlit_secret_key() -> str:
     try:
@@ -1212,7 +1234,7 @@ def generate_pdf_bytes(analysis: dict, chart_png_bytes=None) -> bytes:
 
     # Reasons
     story.append(Paragraph("三、趨勢判斷與理由", ps_h2))
-    reason_text = analysis.get("reason_text", "—")
+    reason_text = _replace_segment_codes(analysis.get("reason_text", "—"))
     for line in reason_text.split("\n"):
         if line.strip():
             story.append(Paragraph(line.strip(), ps_body))
@@ -1483,7 +1505,7 @@ def show(r):
                 else:
                     st.metric("預測報酬",f"{rp.get('expected_return',0)*100:+.2f}%")
                     st.metric("報酬上漲機率",f"{rp.get('prob_up',0.5)*100:.1f}%")
-                    st.metric("分段",rp.get("segment","—"))
+                    st.metric("分段",_segment_label(rp.get("segment","—")))
                     st.caption(f"{_return_model_label(rp.get('model',''))} · samples={rp.get('n_samples',0)}")
         with b:
             st.markdown("**回測（含台灣市場交易成本 ~0.588%）**")
@@ -1527,7 +1549,7 @@ def show(r):
     with t2:
         # Show full reason text from desktop-quality analysis
         try:
-            reason = r.get("reason_text") or build_reason_text(r)
+            reason = _replace_segment_codes(r.get("reason_text") or build_reason_text(r))
             if reason:
                 for line in reason.split("\n"):
                     if line.strip():
@@ -1715,15 +1737,17 @@ def show(r):
         c2.metric("上漲機率",f"{rp.get('prob_up',0.5)*100:.1f}%")
         c3.metric("WF 命中率",rb.get("hit_rate_text","N/A"))
         c4.metric("MAE",f"{rb.get('mae',0)*100:.2f}%")
-        st.caption(f"目前分段：{rp.get('segment','—')}；模型：{_return_model_label(rp.get('model',''))}")
+        st.caption(f"目前分段：{_segment_label(rp.get('segment','—'))}；模型：{_return_model_label(rp.get('model',''))}")
         if isinstance(d,pd.DataFrame) and not d.empty:
             out=d.copy()
             out["date"]=pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
             out["predicted_return"]=out["predicted_return"]*100
             out["actual_return"]=out["actual_return"]*100
             out["hit"]=out["hit"].map({True:"命中",False:"未命中"})
+            if "segment" in out:
+                out["segment"]=out["segment"].map(_segment_label)
             st.dataframe(out.rename(columns={
-                "date":"日期","segment":"segment",
+                "date":"日期",
                 "segment":"分段",
                 "predicted_return":"預測報酬(%)",
                 "actual_return":"實際報酬(%)",

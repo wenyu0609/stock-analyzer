@@ -2075,7 +2075,7 @@ def run_analysis(symbol: str, lookback_years: int = 3,
             f"美股背景：NASDAQ {mkt_ctx.get('nasdaq_ret_1',0)*100:+.2f}%、S&P500 {mkt_ctx.get('sp500_ret_1',0)*100:+.2f}%、SMH {mkt_ctx.get('smh_ret_1',mkt_ctx.get('semis_ret_1',0))*100:+.2f}%、費半SOX {mkt_ctx.get('sox_ret_1',0)*100:+.2f}%。",
             f"新聞情緒：{ns.get('label','中性')}（正面 {ns.get('positive_ct',0)} / 負面 {ns.get('negative_ct',0)}）。",
             f"基本面/公司動能：P/E {fund.get('pe_ratio','—')}、EPS {fund.get('eps','—')}、營收成長 {fund.get('rev_growth',0)*100 if fund.get('rev_growth') is not None else 0:+.1f}%、殖利率 {fund.get('div_yield',0)*100 if fund.get('div_yield') is not None else 0:.2f}%、技術/訂單新聞分數 {fund.get('company_event_score',0):+.2f}。",
-            f"報酬率模型：預測未來 {return_horizon} 日報酬 {return_pred.get('expected_return',0)*100:+.2f}%、segment={return_pred.get('segment','—')}、walk-forward 命中率 {return_bt.get('hit_rate_text','N/A')}。",
+            f"報酬率模型：預測未來 {return_horizon} 日報酬 {return_pred.get('expected_return',0)*100:+.2f}%、分段={return_pred.get('segment','—')}（月內位置｜趨勢狀態｜波動狀態）、walk-forward 命中率 {return_bt.get('hit_rate_text','N/A')}。",
         ]
 
         # 9. Assemble
