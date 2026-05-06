@@ -1323,7 +1323,7 @@ def _cached_daily_recommendations(weights_tuple):
         weights=weights,
         progress_callback=None,
         fast_mode=True,
-        finalist_count=18,
+        finalist_count=12,
     )
 
 _DEFAULT_QUICK_PICKS = [

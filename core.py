@@ -2,7 +2,7 @@
 # All analysis logic: indicators, ML, forecast, backtest, names
 # This file has ZERO PySide6 / GUI dependencies — pure Python data layer
 
-import os, sys, json, time, warnings, re, html
+import os, sys, json, time, warnings, re, html, logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, time as dtime
@@ -16,6 +16,8 @@ warnings.filterwarnings("ignore")
 try:
     import yfinance as yf
     YF_OK = True
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    logging.getLogger("yfinance.scrapers.history").setLevel(logging.CRITICAL)
 except ImportError:
     yf = None; YF_OK = False
 
@@ -97,6 +99,12 @@ _ANALYSIS_CACHE = {}
 _ANALYSIS_CACHE_TTL = 900  # 15 minutes
 _TOP_VOLUME_CACHE = {}
 _TOP_VOLUME_CACHE_TTL = 1800  # 30 minutes
+_HISTORY_CACHE = {}
+_HISTORY_CACHE_TTL = 3600  # 1 hour
+_QUICK_RECOMMEND_CACHE = {}
+_QUICK_RECOMMEND_CACHE_TTL = 1800  # 30 minutes
+_BAD_YF_SYMBOLS = {}
+_BAD_YF_SYMBOL_TTL = 6 * 3600
 
 TW_TZ = "Asia/Taipei"
 MARKET_OPEN = dtime(9, 0)
@@ -112,6 +120,37 @@ def _safe_float(v, default=0.0):
         return x if np.isfinite(x) else default
     except Exception:
         return default
+
+def _is_recommendable_tw_code(code: str, name: str = "") -> bool:
+    """Keep daily recommendations to Yahoo-compatible common stocks / ETFs."""
+    raw = str(code or "").strip().upper()
+    if not re.fullmatch(r"\d{4,6}[A-Z]?", raw):
+        return False
+    nm = str(name or "")
+    if any(x in nm for x in ("權證", "認購", "認售", "牛證", "熊證")):
+        return False
+
+    suffix = raw[-1] if raw[-1].isalpha() else ""
+    if suffix and suffix not in {"L", "R", "U"}:
+        return False
+    digits = raw[:-1] if suffix else raw
+    if len(digits) == 4:
+        return True
+    if len(digits) == 5 and digits.startswith("00"):
+        return True
+    # A few older ETFs are six-digit and available on Yahoo; most new six-digit
+    # TPEX products are not, so keep only the known stable family for scans.
+    if len(digits) == 6 and digits in {"006201", "006203", "006204", "006205", "006206", "006207", "006208"}:
+        return True
+    return False
+
+def _bad_yf_symbol(sym: str) -> bool:
+    rec = _BAD_YF_SYMBOLS.get(str(sym or "").upper())
+    return bool(rec and time.time() - rec < _BAD_YF_SYMBOL_TTL)
+
+def _mark_bad_yf_symbol(sym: str):
+    if sym:
+        _BAD_YF_SYMBOLS[str(sym).upper()] = time.time()
 
 def _tw_date_candidates(days: int = 10):
     base = pd.Timestamp.today().normalize()
@@ -708,10 +747,21 @@ def resolve_and_fetch(symbol: str, lookback_years: int = 3, api_key: str = "") -
     if not YF_OK:
         raise RuntimeError("yfinance 未安裝")
     raw = _tw_code_key(symbol)
+    cache_key = json.dumps({
+        "symbol": str(symbol or "").strip().upper(),
+        "years": int(max(1, lookback_years)),
+        "api": bool(api_key),
+    }, sort_keys=True)
+    cached = _HISTORY_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _HISTORY_CACHE_TTL:
+        sym0, name0, df0 = cached[1]
+        return sym0, name0, df0.copy()
     if raw and re.fullmatch(r"\d{4,6}[A-Z]?", raw):
         auth_df = _fetch_authorized_history(raw, lookback_years, api_key)
         if len(auth_df) >= 30:
-            return f"{raw}.TW", resolve_tw_display_name(raw), auth_df
+            result = (f"{raw}.TW", resolve_tw_display_name(raw), auth_df)
+            _HISTORY_CACHE[cache_key] = (time.time(), (result[0], result[1], result[2].copy()))
+            return result
 
     candidates = []
     s = str(symbol or "").strip().upper()
@@ -729,13 +779,22 @@ def resolve_and_fetch(symbol: str, lookback_years: int = 3, api_key: str = "") -
     best     = None
     last_err = ""
     for sym in candidates:
+        if _bad_yf_symbol(sym):
+            last_err = f"{sym}: recently unavailable"
+            continue
         try:
             ticker = yf.Ticker(sym)
             df = _yf_history_with_retry(ticker, period)
-            if df is None or df.empty: last_err = f"{sym}: 無資料"; continue
+            if df is None or df.empty:
+                _mark_bad_yf_symbol(sym)
+                last_err = f"{sym}: no data"
+                continue
             df = _normalize_history_df(df)
             n = len(df)
-            if n < HARD_MIN: last_err = f"{sym}: {n}筆不足"; continue
+            if n < HARD_MIN:
+                _mark_bad_yf_symbol(sym)
+                last_err = f"{sym}: only {n} rows"
+                continue
             # Resolve name
             rc = _tw_code_key(sym)
             if rc and re.fullmatch(r"\d{4,6}[A-Z]?", rc):
@@ -754,6 +813,7 @@ def resolve_and_fetch(symbol: str, lookback_years: int = 3, api_key: str = "") -
             if not name or (is_tw and not _cjk(name)):
                 name = rc or sym
             if n >= 80:
+                _HISTORY_CACHE[cache_key] = (time.time(), (sym, name, df.copy()))
                 return sym, name, df
             if best is None:
                 best = (sym, name, df)
@@ -761,6 +821,7 @@ def resolve_and_fetch(symbol: str, lookback_years: int = 3, api_key: str = "") -
         except Exception as e:
             last_err = f"{sym}: {e}"
     if best:
+        _HISTORY_CACHE[cache_key] = (time.time(), (best[0], best[1], best[2].copy()))
         return best
     raise RuntimeError(f"查無 {symbol}：{last_err}")
 
@@ -1683,7 +1744,8 @@ def get_top_volume_stocks(limit: int = 100) -> list:
                 it.get("TradeVolume") or it.get("成交股數") or it.get("TradingShares") or
                 it.get("成交量") or it.get("Volume") or 0
             )
-            if code and code[0].isdigit() and vol > 0:
+            code = code.upper()
+            if code and vol > 0 and _is_recommendable_tw_code(code, name):
                 if name: TW_NAME_CACHE.setdefault(code, name)
                 parsed.append((code, vol, source))
 
@@ -1737,6 +1799,13 @@ def _quick_recommend_candidate(code: str, lookback_years: int, forecast_days: in
     It still analyzes every top-volume stock, but avoids the expensive per-stock
     news/fundamental/ML/API-heavy calls until finalists are selected.
     """
+    raw_code = _tw_code_key(code)
+    if raw_code and not _is_recommendable_tw_code(raw_code):
+        return None
+    cache_key = f"{raw_code or code}:{max(1, int(lookback_years))}:{int(forecast_days)}"
+    cached = _QUICK_RECOMMEND_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _QUICK_RECOMMEND_CACHE_TTL:
+        return dict(cached[1])
     try:
         sym, name, df = resolve_and_fetch(code, lookback_years)
         ind = compute_indicators(df)
@@ -1750,12 +1819,18 @@ def _quick_recommend_candidate(code: str, lookback_years: int, forecast_days: in
         vol_ratio = float(df["Volume"].iloc[-1]) / max(float(ind["vol_ma20"].iloc[-1]), 1.0)
         # First-stage score: trend + forecast + liquidity confirmation.
         score = fc_pct * 3.0 + diag.get("score", 0.0) * 1.1 + np.clip((vol_ratio - 1.0) / 2.0, -0.4, 0.6)
-        return {
+        result = {
             "code": sym.split(".")[0], "name": name, "quick_score": float(score),
             "last": last, "forecast_pct": fc_pct * 100,
             "diagnosis": diag.get("label", "中性"),
         }
-    except Exception:
+        _QUICK_RECOMMEND_CACHE[cache_key] = (time.time(), dict(result))
+        return result
+    except Exception as e:
+        low = str(e).lower()
+        if raw_code and ("no data" in low or "not found" in low or "delisted" in low or "查無" in str(e)):
+            _mark_bad_yf_symbol(f"{raw_code}.TW")
+            _mark_bad_yf_symbol(f"{raw_code}.TWO")
         return None
 
 
@@ -1812,7 +1887,8 @@ def recommend_top_volume_stocks(volume_limit: int = 100, top_n: int = 5,
     if fast_mode:
         quick_rows = []
         with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(_quick_recommend_candidate, c, max(1, lookback_years), forecast_days): c for c in codes}
+            quick_years = 1
+            futs = {ex.submit(_quick_recommend_candidate, c, quick_years, forecast_days): c for c in codes}
             done = 0
             for fut in as_completed(futs):
                 done += 1
