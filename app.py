@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import warnings, io, time, re
+import warnings, io, time, re, hashlib
 from datetime import datetime
 
 try:
@@ -47,6 +47,7 @@ from core import (
     run_analysis, TW_NAME_CACHE, _load_twse_bulk, _load_tpex_bulk,
     compute_drift_bias, simple_forecast, backtest_directional,
     simulate_macd_cross_strategy, recommend_top_volume_stocks,
+    recommend_landing_quick_picks,
     friendly_error_message, DEFAULT_WEIGHTS,
     _cjk, SKLEARN_OK, XGB_OK, TORCH_OK, YF_OK,
     get_intraday_analysis, read_marketdata_key, segment_to_zh,
@@ -1325,6 +1326,85 @@ def _cached_daily_recommendations(weights_tuple):
         finalist_count=18,
     )
 
+_DEFAULT_QUICK_PICKS = [
+    {"name": "台積電", "code": "2330", "reason": "預設快速選股"},
+    {"name": "元大台灣50", "code": "0050", "reason": "預設快速選股"},
+    {"name": "國泰永續高股息", "code": "00878", "reason": "預設快速選股"},
+    {"name": "元大台灣50正2", "code": "00631L", "reason": "預設快速選股"},
+    {"name": "聯發科", "code": "2454", "reason": "預設快速選股"},
+    {"name": "長榮", "code": "2603", "reason": "預設快速選股"},
+]
+
+def _today_tw_key():
+    try:
+        return pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+def _daily_pick_jitter(date_key, code):
+    raw = f"{date_key}:{code}".encode("utf-8", errors="ignore")
+    h = hashlib.sha256(raw).hexdigest()[:8]
+    return int(h, 16) / 0xFFFFFFFF
+
+def _normalize_quick_pick_rows(rows, date_key, top_n=6):
+    cleaned = []
+    for it in rows or []:
+        code = str(it.get("code", "")).strip().upper()
+        if not code:
+            continue
+        try:
+            score = float(it.get("score", it.get("quick_score", 0.0)) or 0.0)
+        except Exception:
+            score = 0.0
+        name = str(it.get("name") or code).strip()
+        reason = str(it.get("reason") or it.get("diagnosis") or "依每日推薦股票評分篩選").strip()
+        cleaned.append({"name": name, "code": code, "reason": reason, "score": score})
+
+    if not cleaned:
+        return _DEFAULT_QUICK_PICKS[:top_n]
+
+    cleaned.sort(key=lambda x: x["score"], reverse=True)
+    anchors = cleaned[:2]
+    rest = cleaned[2:]
+    if rest:
+        denom = max(len(rest) - 1, 1)
+        for rank, it in enumerate(rest):
+            # Keep the strongest names first, then let the date rotate the
+            # remaining high-quality candidates so the homepage changes daily.
+            quality_rank = 1.0 - (rank / denom)
+            it["_daily_score"] = quality_rank * 0.75 + _daily_pick_jitter(date_key, it["code"]) * 0.25
+        rest.sort(key=lambda x: x.get("_daily_score", x["score"]), reverse=True)
+
+    selected = anchors + rest
+    seen = {x["code"] for x in selected}
+    for fallback in _DEFAULT_QUICK_PICKS:
+        if len(selected) >= top_n:
+            break
+        if fallback["code"] not in seen:
+            selected.append(dict(fallback))
+            seen.add(fallback["code"])
+    return selected[:top_n]
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def _cached_landing_quick_picks(date_key, weights_tuple):
+    _ = weights_tuple  # keep app settings in the cache key so a settings change refreshes homepage picks.
+    rows = recommend_landing_quick_picks(
+        volume_limit=100,
+        top_n=12,
+        lookback_years=1,
+        forecast_days=20,
+        progress_callback=None,
+    )
+    return _normalize_quick_pick_rows(rows, date_key, top_n=6)
+
+def _landing_quick_picks(date_key):
+    weights_tuple = tuple(sorted(st.session_state.weights.items()))
+    try:
+        return _cached_landing_quick_picks(date_key, weights_tuple)
+    except Exception as e:
+        st.caption("今日快速選股暫時無法更新，先顯示預設清單：" + friendly_error_message(e))
+        return _DEFAULT_QUICK_PICKS[:6]
+
 def render_daily_recommendations():
     st.markdown("### 🔥 每日推薦股票")
     st.caption("掃描範圍：每日由 TWSE/TPEX 公開資料取得台股前 100 大成交量，不限自選股。流程：100 檔全部快速掃描 → 高分候選完整分析；結果快取 1 小時，重新整理或快取到期會更新。")
@@ -1977,12 +2057,31 @@ else:
         f"支援：上市 · 上櫃 · ETF · 槓桿反向 · 受益憑證 · 美股</p>"
         f"</div>", unsafe_allow_html=True)
     st.divider()
-    st.markdown("#### 快速選股")
-    ex=[("台積電","2330"),("元大台灣50","0050"),
-        ("國泰永續高股息","00878"),("元大台灣50正2","00631L"),
-        ("聯發科","2454"),("長榮","2603")]
-    cols=st.columns(len(ex))
-    for col,(n,c) in zip(cols,ex):
-        if col.button(f"{n}\n({c})",use_container_width=True):
-            with st.spinner(f"分析 {c}…"): analyze(c)
-            st.rerun()
+    st.markdown("#### 今日快速選股")
+    quick_date = _today_tw_key()
+    quick_hdr = st.columns([5, 1])
+    quick_hdr[0].caption(
+        f"{quick_date} 自動更新。依「每日推薦股票」邏輯掃描台股成交量名單，挑選今日較有潛力的標的。"
+    )
+    if quick_hdr[1].button("重新產生", use_container_width=True, help="清除今日首頁快速選股快取並重新掃描"):
+        _cached_landing_quick_picks.clear()
+        st.rerun()
+
+    with st.spinner("產生今日快速選股..."):
+        ex = _landing_quick_picks(quick_date)
+
+    for start in range(0, len(ex), 3):
+        cols = st.columns(min(3, len(ex) - start))
+        for col, item in zip(cols, ex[start:start + 3]):
+            n = str(item.get("name") or item.get("code") or "")
+            c = str(item.get("code") or "").strip().upper()
+            reason = str(item.get("reason") or "依每日推薦股票評分篩選")
+            if col.button(f"{n}\n({c})", use_container_width=True, key=f"quick_pick_{quick_date}_{c}", help=reason):
+                with st.spinner(f"分析 {c}..."):
+                    analyze(c)
+                st.rerun()
+            if "score" in item:
+                try:
+                    col.caption(f"推薦分 {float(item['score']):+.1f}")
+                except Exception:
+                    pass

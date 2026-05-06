@@ -1759,6 +1759,38 @@ def _quick_recommend_candidate(code: str, lookback_years: int, forecast_days: in
         return None
 
 
+def recommend_landing_quick_picks(volume_limit: int = 100, top_n: int = 10,
+                                  lookback_years: int = 1, forecast_days: int = 20,
+                                  progress_callback=None) -> list:
+    """
+    Fast homepage picks using the same first-stage scoring as daily recommendations.
+
+    The full daily recommendation panel still runs deeper analysis on finalists.
+    This helper is intentionally lighter so the homepage does not feel stuck on
+    first load.
+    """
+    codes = get_top_volume_stocks(volume_limit)
+    total = len(codes)
+    rows = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(_quick_recommend_candidate, c, max(1, lookback_years), forecast_days): c for c in codes}
+        done = 0
+        for fut in as_completed(futs):
+            done += 1
+            if progress_callback:
+                progress_callback(done, total, f"快速篩選 {futs[fut]}")
+            item = fut.result()
+            if item is None:
+                continue
+            forecast_pct = float(item.get("forecast_pct", 0.0) or 0.0)
+            diagnosis = str(item.get("diagnosis") or "中性")
+            item["score"] = float(item.get("quick_score", 0.0) or 0.0)
+            item["reason"] = f"快速評分：{diagnosis}，{forecast_days}日預測 {forecast_pct:+.1f}%"
+            rows.append(item)
+    rows.sort(key=lambda x: x.get("score", x.get("quick_score", 0.0)), reverse=True)
+    return rows[:top_n]
+
+
 def recommend_top_volume_stocks(volume_limit: int = 100, top_n: int = 5,
                                 lookback_years: int = 2, forecast_days: int = 20,
                                 weights: dict = None, progress_callback=None,
